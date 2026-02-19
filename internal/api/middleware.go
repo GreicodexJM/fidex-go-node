@@ -1,0 +1,144 @@
+package api
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"strings"
+)
+
+// IPAllowlistMiddleware restricts access based on allowed IP addresses
+func IPAllowlistMiddleware(allowedIPs []string) func(next http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Get the client IP
+			clientIP := getClientIP(r)
+
+			log.Printf("IP Allowlist Check: Client IP=%s", clientIP)
+
+			// Check if IP is in the allowlist
+			if !isIPAllowed(clientIP, allowedIPs) {
+				log.Printf("Access denied: IP %s not in allowlist", clientIP)
+				respondWithError(w, http.StatusForbidden, "Access denied", fmt.Errorf("IP address not authorized"))
+				return
+			}
+
+			// IP is allowed, proceed
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// APIKeyMiddleware validates the Authorization header contains a valid Bearer token
+func APIKeyMiddleware(expectedKey string) func(next http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Get the Authorization header
+			authHeader := r.Header.Get("Authorization")
+
+			if authHeader == "" {
+				log.Printf("Access denied: Missing Authorization header from %s", r.RemoteAddr)
+				respondWithError(w, http.StatusUnauthorized, "Unauthorized", fmt.Errorf("missing authorization header"))
+				return
+			}
+
+			// Check if it's a Bearer token
+			if !strings.HasPrefix(authHeader, "Bearer ") {
+				log.Printf("Access denied: Invalid authorization format from %s", r.RemoteAddr)
+				respondWithError(w, http.StatusUnauthorized, "Unauthorized", fmt.Errorf("invalid authorization format"))
+				return
+			}
+
+			// Extract the token
+			token := strings.TrimPrefix(authHeader, "Bearer ")
+
+			// Validate the token
+			if token != expectedKey {
+				log.Printf("Access denied: Invalid API key from %s", r.RemoteAddr)
+				respondWithError(w, http.StatusUnauthorized, "Unauthorized", fmt.Errorf("invalid API key"))
+				return
+			}
+
+			// Valid API key, proceed
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// getClientIP extracts the real client IP from the request
+// It checks X-Forwarded-For, X-Real-IP headers first, then falls back to RemoteAddr
+func getClientIP(r *http.Request) string {
+	// Check X-Forwarded-For header (used by proxies)
+	forwarded := r.Header.Get("X-Forwarded-For")
+	if forwarded != "" {
+		// X-Forwarded-For can contain multiple IPs, take the first one
+		ips := strings.Split(forwarded, ",")
+		if len(ips) > 0 {
+			return strings.TrimSpace(ips[0])
+		}
+	}
+
+	// Check X-Real-IP header (used by some proxies)
+	realIP := r.Header.Get("X-Real-IP")
+	if realIP != "" {
+		return realIP
+	}
+
+	// Fall back to RemoteAddr
+	// RemoteAddr format is "IP:Port", we need to extract just the IP
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		// If SplitHostPort fails, return RemoteAddr as-is
+		return r.RemoteAddr
+	}
+
+	return ip
+}
+
+// isIPAllowed checks if the client IP is in the allowlist
+func isIPAllowed(clientIP string, allowedIPs []string) bool {
+	// Parse the client IP
+	parsedClientIP := net.ParseIP(clientIP)
+	if parsedClientIP == nil {
+		log.Printf("Warning: Could not parse client IP: %s", clientIP)
+		return false
+	}
+
+	// Check against each allowed IP
+	for _, allowedIP := range allowedIPs {
+		// Handle CIDR notation (e.g., "192.168.1.0/24")
+		if strings.Contains(allowedIP, "/") {
+			_, ipNet, err := net.ParseCIDR(allowedIP)
+			if err != nil {
+				log.Printf("Warning: Invalid CIDR notation in allowlist: %s", allowedIP)
+				continue
+			}
+			if ipNet.Contains(parsedClientIP) {
+				return true
+			}
+		} else {
+			// Direct IP comparison
+			parsedAllowedIP := net.ParseIP(allowedIP)
+			if parsedAllowedIP == nil {
+				log.Printf("Warning: Invalid IP in allowlist: %s", allowedIP)
+				continue
+			}
+			if parsedClientIP.Equal(parsedAllowedIP) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// ParseAllowedIPs parses a JSON array string of allowed IPs
+func ParseAllowedIPs(jsonStr string) ([]string, error) {
+	var ips []string
+	if err := json.Unmarshal([]byte(jsonStr), &ips); err != nil {
+		return nil, fmt.Errorf("failed to parse allowed IPs: %w", err)
+	}
+	return ips, nil
+}

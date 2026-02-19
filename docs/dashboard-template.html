@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en" class="antialiased">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FideX Hub - Trading Partner Directory</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        slate: {
+                            50: '#f8fafc',
+                            100: '#f1f5f9',
+                            200: '#e2e8f0',
+                            300: '#cbd5e1',
+                            400: '#94a3b8',
+                            500: '#64748b',
+                            600: '#475569',
+                            700: '#334155',
+                            800: '#1e293b',
+                            900: '#0f172a',
+                        },
+                        fideX: {
+                            50: '#eff6ff',
+                            100: '#dbeafe',
+                            500: '#3b82f6',
+                            600: '#2563eb',
+                            700: '#1d4ed8',
+                        }
+                    },
+                    animation: {
+                        'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                        'slide-in': 'slideIn 0.3s ease-out',
+                    },
+                    keyframes: {
+                        slideIn: {
+                            '0%': { transform: 'translateY(-10px)', opacity: '0' },
+                            '100%': { transform: 'translateY(0)', opacity: '1' },
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .glass-effect {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+        }
+        .status-dot {
+            box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.8);
+        }
+        .mono-truncate {
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: -0.02em;
+        }
+        .metric-card {
+            transition: all 0.2s ease;
+        }
+        .metric-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+        }
+        .live-indicator::before {
+            content: '';
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            background: #10b981;
+            border-radius: 50%;
+            margin-right: 6px;
+            animation: pulse 2s infinite;
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900 font-sans h-screen overflow-hidden">
+
+    <!-- Sidebar -->
+    <aside class="fixed left-0 top-0 h-full w-64 bg-white border-r border-slate-200 z-40 flex flex-col hidden lg:flex">
+        <div class="p-6 border-b border-slate-200">
+            <div class="flex items-center gap-3">
+                <div class="w-8 h-8 bg-fideX-600 rounded-lg flex items-center justify-center">
+                    <i data-lucide="share-2" class="w-5 h-5 text-white"></i>
+                </div>
+                <span class="font-bold text-xl tracking-tight text-slate-900">FideX<span class="text-fideX-600">Hub</span></span>
+            </div>
+        </div>
+
+        <nav class="flex-1 overflow-y-auto p-4 space-y-1">
+            <div class="px-3 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">Overview</div>
+            <a href="#" class="flex items-center gap-3 px-3 py-2 bg-fideX-50 text-fideX-700 rounded-md font-medium">
+                <i data-lucide="layout-dashboard" class="w-4 h-4"></i>
+                Command Dashboard
+            </a>
+            <a href="#" class="flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 hover:text-slate-900 rounded-md font-medium transition-colors">
+                <i data-lucide="users" class="w-4 h-4"></i>
+                Trading Partners
+                <span class="ml-auto text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">24</span>
+            </a>
+            <a href="#" class="flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 hover:text-slate-900 rounded-md font-medium transition-colors">
+                <i data-lucide="file-text" class="w-4 h-4"></i>
+                EDI Documents
+            </a>
+
+            <div class="px-3 py-2 mt-6 text-xs font-semibold text-slate-400 uppercase tracking-wider">Operations</div>
+            <a href="#" class="flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 hover:text-slate-900 rounded-md font-medium transition-colors">
+                <i data-lucide="activity" class="w-4 h-4"></i>
+                Transaction Log
+            </a>
+            <a href="#" class="flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 hover:text-slate-900 rounded-md font-medium transition-colors">
+                <i data-lucide="alert-circle" class="w-4 h-4"></i>
+                Quarantine
+                <span class="ml-auto text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full">3</span>
+            </a>
+            <a href="#" class="flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 hover:text-slate-900 rounded-md font-medium transition-colors">
+                <i data-lucide="webhook" class="w-4 h-4"></i>
+                Webhooks
+            </a>
+
+            <div class="px-3 py-2 mt-6 text-xs font-semibold text-slate-400 uppercase tracking-wider">System</div>
+            <a href="#" class="flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 hover:text-slate-900 rounded-md font-medium transition-colors">
+                <i data-lucide="settings" class="w-4 h-4"></i>
+                Configuration
+            </a>
+            <a href="#" class="flex items-center gap-3 px-3 py-2 text-slate-600 hover:bg-slate-50 hover:text-slate-900 rounded-md font-medium transition-colors">
+                <i data-lucide="key" class="w-4 h-4"></i>
+                API Keys
+            </a>
+        </nav>
+
+        <div class="p-4 border-t border-slate-200">
+            <div class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-slate-50 cursor-pointer transition-colors">
+                <img src="http://static.photos/people/200x200/42" alt="User" class="w-8 h-8 rounded-full object-cover">
+                <div class="flex-1 min-w-0">
+                    <p class="text-sm font-medium text-slate-900 truncate">Sarah Chen</p>
+                    <p class="text-xs text-slate-500 truncate">Ops Manager</p>
+                </div>
+                <i data-lucide="log-out" class="w-4 h-4 text-slate-400"></i>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Mobile Header -->
+    <header class="lg:hidden fixed top-0 left-0 right-0 h-16 bg-white border-b border-slate-200 z-50 flex items-center justify-between px-4">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 bg-fideX-600 rounded-lg flex items-center justify-center">
+                <i data-lucide="share-2" class="w-5 h-5 text-white"></i>
+            </div>
+            <span class="font-bold text-lg tracking-tight">FideX<span class="text-fideX-600">Hub</span></span>
+        </div>
+        <button id="mobile-menu-btn" class="p-2 hover:bg-slate-100 rounded-md">
+            <i data-lucide="menu" class="w-5 h-5"></i>
+        </button>
+    </header>
+
+    <!-- Main Content -->
+    <main class="lg:ml-64 pt-16 lg:pt-0 h-full overflow-y-auto bg-slate-50">
+        <div class="max-w-7xl mx-auto p-6 lg:p-8 space-y-8">
+            
+            <!-- Header Section -->
+            <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                <div>
+                    <h1 class="text-2xl font-bold text-slate-900">Command Dashboard</h1>
+                    <p class="text-slate-500 mt-1">Real-time visibility into your B2B ecosystem</p>
+                </div>
+                <div class="flex items-center gap-3">
+                    <div class="flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 rounded-md text-sm text-slate-600 shadow-sm">
+                        <span class="live-indicator flex items-center"></span>
+                        <span class="font-medium">System Operational</span>
+                    </div>
+                    <button class="p-2 bg-white border border-slate-200 rounded-md hover:bg-slate-50 shadow-sm transition-colors">
+                        <i data-lucide="refresh-cw" class="w-4 h-4 text-slate-600"></i>
+                    </button>
+                    <button class="px-4 py-2 bg-fideX-600 text-white rounded-md font-medium hover:bg-fideX-700 transition-colors shadow-sm flex items-center gap-2">
+                        <i data-lucide="plus" class="w-4 h-4"></i>
+                        New Partner
+                    </button>
+                </div>
+            </div>
+
+            <!-- Health Metrics Grid -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <!-- Messages Delivered -->
+                <div class="metric-card bg-white rounded-xl p-6 border border-slate-200 shadow-sm relative overflow-hidden">
+                    <div class="absolute top-0 right-0 p-4 opacity-10">
+                        <i data-lucide="check-circle" class="w-16 h-16 text-emerald-500"></i>
+                    </div>
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-sm font-medium text-slate-500">Messages Delivered</span>
+                        <span class="flex items-center text-xs font-medium text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full">
+                            <i data-lucide="trending-up" class="w-3 h-3 mr-1"></i>
+                            +12.5%
+                        </span>
+                    </div>
+                    <div class="flex items-baseline gap-2">
+                        <span class="text-3xl font-bold text-slate-900 count-up" data-target="2847">0</span>
+                        <span class="text-sm text-slate-400">last 24h</span>
+                    </div>
+                    <div class="mt-4 h-1 bg-slate-100 rounded-full overflow-hidden">
+                        <div class="h-full bg-emerald-500 rounded-full" style="width: 94%"></div>
+                    </div>
+                    <p class="text-xs text-slate-400 mt-2">94% success rate</p>
+                </div>
+
+                <!-- Transmission Attempts -->
+                <div class="metric-card bg-white rounded-xl p-6 border border-slate-200 shadow-sm relative overflow-hidden">
+                    <div class="absolute top-0 right-0 p-4 opacity-10">
+                        <i data-lucide="send" class="w-16 h-16 text-fideX-500"></i>
+                    </div>
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-sm font-medium text-slate-500">Transmission Attempts</span>
+                        <span class="flex items-center text-xs font-medium text-fideX-600 bg-fideX-50 px-2 py-1 rounded-full">
+                            <i data-lucide="activity" class="w-3 h-3 mr-1"></i>
+                            Active
+                        </span>
+                    </div>
+                    <div class="flex items-baseline gap-2">
+                        <span class="text-3xl font-bold text-slate-900 count-up" data-target="3029">0</span>
+                        <span class="text-sm text-slate-400">last 24h</span>
+                    </div>
+                    <div class="mt-4 h-1 bg-slate-100 rounded-full overflow-hidden">
+                        <div class="h-full bg-fideX-500 rounded-full" style="width: 78%"></div>
+                    </div>
+                    <p class="text-xs text-slate-400 mt-2">182 pending retry</p>
+                </div>
+
+                <!-- Failed at ERP -->
+                <div class="metric-card bg-white rounded-xl p-6 border border-slate-200 shadow-sm relative overflow-hidden">
+                    <div class="absolute top-0 right-0 p-4 opacity-10">
+                        <i data-lucide="x-circle" class="w-16 h-16 text-rose-500"></i>
+                    </div>
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-sm font-medium text-slate-500">Failed at ERP</span>
+                        <span class="flex items-center text-xs font-medium text-rose-600 bg-rose-50 px-2 py-1 rounded-full">
+                            <i data-lucide="alert-triangle" class="w-3 h-3 mr-1"></i>
+                            Needs Attention
+                        </span>
+                    </div>
+                    <div class="flex items-baseline gap-2">
+                        <span class="text-3xl font-bold text-slate-900 count-up" data-target="23">0</span>
+                        <span class="text-sm text-slate-400">last 24h</span>
+                    </div>
+                    <div class="mt-4 h-1 bg-slate-100 rounded-full overflow-hidden">
+                        <div class="h-full bg-rose-500 rounded-full" style="width: 12%"></div>
+                    </div>
+                    <p class="text-xs text-slate-400 mt-2">0.8% of total volume</p>
+                </div>
+
+                <!-- Quarantined -->
+                <div class="metric-card bg-white rounded-xl p-6 border border-slate-200 shadow-sm relative overflow-hidden">
+                    <div class="absolute top-0 right-0 p-4 opacity-10">
+                        <i data-lucide="shield-alert" class="w-16 h-16 text-amber-500"></i>
+                    </div>
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-sm font-medium text-slate-500">Quarantined</span>
+                        <span class="flex items-center text-xs font-medium text-amber-600 bg-amber-50 px-2 py-1 rounded-full">
+                            <i data-lucide="clock" class="w-3 h-3 mr-1"></i>
+                            Review Required
+                        </span>
+                    </div>
+                    <div class="flex items-baseline gap-2">
+                        <span class="text-3xl font-bold text-slate-900 count-up" data-target="3">0</span>
+                        <span class="text-sm text-slate-400">documents</span>
+                    </div>
+                    <div class="mt-4 h-1 bg-slate-100 rounded-full overflow-hidden">
+                        <div class="h-full bg-amber-500 rounded-full" style="width: 5%"></div>
+                    </div>
+                    <p class="text-xs text-slate-400 mt-2">Auto-resolved in 2h</p>
+                </div>
+            </div>
+
+            <!-- Live Traffic Feed -->
+            <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                <div class="p-6 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                    <div class="flex items-center gap-3">
+                        <div class="p-2 bg-fideX-50 rounded-lg">
+                            <i data-lucide="radio" class="w-5 h-5 text-fideX-600 animate-pulse"></i>
+                        </div>
+                        <div>
+                            <h2 class="text-lg font-semibold text-slate-900">Live Traffic Feed</h2>
+                            <p class="text-sm text-slate-500">Real-time webhook and AS2 receipt monitoring</p>
+                        </div>
+                    </div>
+                    
+                    <div class="flex items-center gap-3 flex-1 lg:flex-initial">
+                        <div class="relative flex-1 lg:w-80">
+                            <i data-lucide="search" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400"></i>
+                            <input 
+                                type="text" 
+                                id="search-input"
+                                placeholder="Search by Partner ID, Document Type..." 
+                                class="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-fideX-500 focus:border-transparent text-sm"
+                            >
+                        </div>
+                        <button class="p-2 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors">
+                            <i data-lucide="filter" class="w-4 h-4 text-slate-600"></i>
+                        </button>
+                        <button class="p-2 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors">
+                            <i data-lucide="download" class="w-4 h-4 text-slate-600"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Filters -->
+                <div class="px-6 py-3 border-b border-slate-200 bg-slate-50/50 flex items-center gap-2 overflow-x-auto">
+                    <button class="px-3 py-1.5 bg-slate-800 text-white text-xs font-medium rounded-full whitespace-nowrap">All Traffic</button>
+                    <button class="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 text-xs font-medium rounded-full hover:bg-slate-50 whitespace-nowrap flex items-center gap-1.5">
+                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                        Delivered
+                    </button>
+                    <button class="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 text-xs font-medium rounded-full hover:bg-slate-50 whitespace-nowrap flex items-center gap-1.5">
+                        <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                        Retrying
+                    </button>
+                    <button class="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 text-xs font-medium rounded-full hover:bg-slate-50 whitespace-nowrap flex items-center gap-1.5">
+                        <span class="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+                        Failed
+                    </button>
+                    <div class="h-4 w-px bg-slate-300 mx-2"></div>
+                    <button class="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 text-xs font-medium rounded-full hover:bg-slate-50 whitespace-nowrap">AS2</button>
+                    <button class="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 text-xs font-medium rounded-full hover:bg-slate-50 whitespace-nowrap">Webhooks</button>
+                    <button class="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 text-xs font-medium rounded-full hover:bg-slate-50 whitespace-nowrap">SFTP</button>
+                </div>
+
+                <!-- Table -->
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="border-b border-slate-200 bg-slate-50/50">
+                                <th class="px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Status</th>
+                                <th class="px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Partner</th>
+                                <th class="px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Document</th>
+                                <th class="px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Direction</th>
+                                <th class="px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Protocol</th>
+                                <th class="px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Time</th>
+                                <th class="px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider text-center">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="traffic-table-body" class="divide-y divide-slate-200">
+                            <!-- Rows will be populated by JavaScript -->
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Pagination -->
+                <div class="px-6 py-4 border-t border-slate-200 flex items-center justify-between bg-slate-50/30">
+                    <div class="text-sm text-slate-500">
+                        Showing <span class="font-medium text-slate-900">1-10</span> of <span class="font-medium text-slate-900">2,847</span> transmissions
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button class="px-3 py-1.5 border border-slate-200 rounded-md text-sm font-medium text-slate-600 hover:bg-white disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                            Previous
+                        </button>
+                        <button class="px-3 py-1.5 border border-slate-200 rounded-md text-sm font-medium text-slate-600 hover:bg-white">
+                            Next
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Quick Actions & Recent Partners -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <!-- Quick Stats -->
+                <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+                    <h3 class="text-sm font-semibold text-slate-900 uppercase tracking-wider mb-4">Top Partners (24h)</h3>
+                    <div class="space-y-4">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center gap-3">
+                                <div class="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center text-blue-700 font-bold text-xs">WM</div>
+                                <div>
+                                    <p class="text-sm font-medium text-slate-900">Walmart</p>
+                                    <p class="text-xs text-slate-500">842 transmissions</p>
+                                </div>
+                            </div>
+                            <span class="text-sm font-medium text-emerald-600">99.2%</span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center gap-3">
+                                <div class="w-8 h-8 bg-orange-100 rounded-full flex items-center justify-center text-orange-700 font-bold text-xs">AZ</div>
+                                <div>
+                                    <p class="text-sm font-medium text-slate-900">Amazon</p>
+                                    <p class="text-xs text-slate-500">634 transmissions</p>
+                                </div>
+                            </div>
+                            <span class="text-sm font-medium text-emerald-600">98.8%</span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center gap-3">
+                                <div class="w-8 h-8 bg-red-100 rounded-full flex items-center justify-center text-red-700 font-bold text-xs">TG</div>
+                                <div>
+                                    <p class="text-sm font-medium text-slate-900">Target</p>
+                                    <p class="text-xs text-slate-500">421 transmissions</p>
+                                </div>
+                            </div>
+                            <span class="text-sm font-medium text-emerald-600">100%</span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center gap-3">
+                                <div class="w-8 h-8 bg-purple-100 rounded-full flex items-center justify-center text-purple-700 font-bold text-xs">CV</div>
+                                <div>
+                                    <p class="text-sm font-medium text-slate-900">CVS Health</p>
+                                    <p class="text-xs text-slate-500">298 transmissions</p>
+                                </div>
+                            </div>
+                            <span class="text-sm font-medium text-amber-600">96.4%</span>
+                        </div>
+                    </div>
+                    <button class="w-full mt-4 text-sm text-fideX-600 font-medium hover:text-fideX-700 flex items-center justify-center gap-1">
+                        View All Partners
+                        <i data-lucide="arrow-right" class="w-4 h-4"></i>
+                    </button>
+                </div>
+
+                <!-- System Health -->
+                <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+                    <h3 class="text-sm font-semibold text-slate-900 uppercase tracking-wider mb-4">System Health</h3>
+                    <div class="space-y-4">
+                        <div>
+                            <div class="flex items-center justify-between mb-1">
+                                <span class="text-sm text-slate-600">AS2 Gateway</span>
+                                <span class="text-xs font-medium text-emerald-600 flex items-center gap-1">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                                    Operational
+                                </span>
+                            </div>
+                            <div class="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                <div class="h-full bg-emerald-500 rounded-full" style="width: 98%"></div>
+                            </div>
+                            <p class="text-xs text-slate-400 mt-1">Latency: 42ms</p>
+                        </div>
+                        <div>
+                            <div class="flex items-center justify-between mb-1">
+                                <span class="text-sm text-slate-600">Webhook Processor</span>
+                                <span class="text-xs font-medium text-emerald-600 flex items-center gap-1">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                                    Operational
+                                </span>
+                            </div>
+                            <div class="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                <div class="h-full bg-emerald-500 rounded-full" style="width: 96%"></div>
+                            </div>
+                            <p class="text-xs text-slate-400 mt-1">Queue: 12 events</p>
+                        </div>
+                        <div>
+                            <div class="flex items-center justify-between mb-1">
+                                <span class="text-sm text-slate-600">ERP Connector</span>
+                                <span class="text-xs font-medium text-amber-600 flex items-center gap-1">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+                                    Degraded
+                                </span>
+                            </div>
+                            <div class="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                <div class="h-full bg-amber-500 rounded-full" style="width: 78%"></div>
+                            </div>
+                            <p class="text-xs text-amber-600 mt-1">23 failed connections</p>
+                        </div>
+                        <div>
+                            <div class="flex items-center justify-between mb-1">
+                                <span class="text-sm text-slate-600">Mapping Engine</span>
+                                <span class="text-xs font-medium text-emerald-600 flex items-center gap-1">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                                    Operational
+                                </span>
+                            </div>
+                            <div class="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                <div class="h-full bg-emerald-500 rounded-full" style="width: 99%"></div>
+                            </div>
+                            <p class="text-xs text-slate-400 mt-1">Processing: 1,240/min</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recent Activity -->
+                <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+                    <h3 class="text-sm font-semibold text-slate-900 uppercase tracking-wider mb-4">Recent Alerts</h3>
+                    <div class="space-y-4">
+                        <div class="flex gap-3">
+                            <div class="w-8 h-8 rounded-full bg-rose-100 flex items-center justify-center flex-shrink-0">
+                                <i data-lucide="alert-circle" class="w-4 h-4 text-rose-600"></i>
+                            </div>
+                            <div class="flex-1">
+                                <p class="text-sm font-medium text-slate-900">ERP Connection Failed</p>
+                                <p class="text-xs text-slate-500 mt-0.5">Partner: Home Depot (850_INVOIC)</p>
+                                <p class="text-xs text-slate-400 mt-1">2 minutes ago</p>
+                            </div>
+                        </div>
+                        <div class="flex gap-3">
+                            <div class="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
+                                <i data-lucide="clock" class="w-4 h-4 text-amber-600"></i>
+                            </div>
+                            <div class="flex-1">
+                                <p class="text-sm font-medium text-slate-900">Document Quarantined</p>
+                                <p class="text-xs text-slate-500 mt-0.5">Invalid X12 format detected</p>
+                                <p class="text-xs text-slate-400 mt-1">15 minutes ago</p>
+                            </div>
+                        </div>
+                        <div class="flex gap-3">
+                            <div class="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
+                                <i data-lucide="user-plus" class="w-4 h-4 text-blue-600"></i>
+                            </div>
+                            <div class="flex-1">
+                                <p class="text-sm font-medium text-slate-900">New Partner Onboarded</p>
+                                <p class="text-xs text-slate-500 mt-0.5">Costco Wholesale configured</p>
+                                <p class="text-xs text-slate-400 mt-1">1 hour ago</p>
+                            </div>
+                        </div>
+                        <div class="flex gap-3">
+                            <div class="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center flex-shrink-0">
+                                <i data-lucide="check-circle" class="w-4 h-4 text-emerald-600"></i>
+                            </div>
+                            <div class="flex-1">
+                                <p class="text-sm font-medium text-slate-900">Batch Completed</p>
+                                <p class="text-xs text-slate-500 mt-0.5">847 documents processed</p>
+                                <p class="text-xs text-slate-400 mt-1">3 hours ago</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <footer class="text-center text-sm text-slate-400 py-8">
+                <p>© 2024 FideX Hub. Trading Partner Directory v2.4.0</p>
+            </footer>
+        </div>
+    </main>
+
+    <!-- Mobile Menu Overlay -->
+    <div id="mobile-menu" class="fixed inset-0 bg-black/50 z-40 hidden lg:hidden">
+        <div class="absolute left-0 top-0 h-full w-64 bg-white shadow-xl transform -translate-x-full transition-transform duration-300" id="mobile-sidebar">
+            <!-- Mobile sidebar content (same as desktop) -->
+        </div>
+    </div>
+
+    <script>
+        // Initialize Lucide Icons
+        lucide.createIcons();
+
+        // Sample data for the traffic feed
+        const partners = [
+            { name: 'Walmart', id: 'WM_001', color: 'bg-blue-100 text-blue-700' },
+            { name: 'Amazon', id: 'AMZ_002', color: 'bg-orange-100 text-orange-700' },
+            { name: 'Target', id: 'TGT_003', color: 'bg-red-100 text-red-700' },
+            { name: 'Home Depot', id: 'HD_004', color: 'bg-orange-100 text-orange-800' },
+            { name: 'Costco', id: 'COST_005', color: 'bg-red-100 text-red-800' },
+            { name: 'CVS Health', id: 'CVS_006', color: 'bg-purple-100 text-purple-700' },
+            { name: 'Best Buy', id: 'BBY_007', color: 'bg-blue-100 text-blue-800' },
+            { name: 'Lowe\'s', id: 'LOW_008', color: 'bg-blue-100 text-blue-600' }
+        ];
+
+        const documentTypes = ['850_PO', '855_PO_ACK', '856_ASN', '810_INVOIC', '997_FA', '820_PAYMENT'];
+        const protocols = ['AS2', 'Webhook', 'SFTP', 'API'];
+        const directions = ['Inbound', 'Outbound'];
+
+        function getRandomItem(arr) {
+            return arr[Math.floor(Math.random() * arr.length)];
+        }
+
+        function generateRandomRow() {
+            const partner = getRandomItem(partners);
+            const docType = getRandomItem(documentTypes);
+            const protocol = getRandomItem(protocols);
+            const direction = getRandomItem(directions);
+            
+            // Weighted random status
+            const rand = Math.random();
+            let status, statusClass, statusIcon;
+            
+            if (rand < 0.85) {
+                status = 'DELIVERED';
+                statusClass = 'bg-emerald-50 text-emerald-700 border-emerald-200';
+                statusIcon = '<span class="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1.5"></span>';
+            } else if (rand < 0.95) {
+                const attempt = Math.floor(Math.random() * 3) + 2;
+                status = `RETRYING (${attempt}/5)`;
+                statusClass = 'bg-amber-50 text-amber-700 border-amber-200';
+                statusIcon = '<span class="w-1.5 h-1.5 rounded-full bg-amber-500 mr-1.5 animate-pulse"></span>';
+            } else {
+                status = 'FAILED';
+                statusClass = 'bg-rose-50 text-rose-700 border-rose-200';
+                statusIcon = '<span class="w-1.5 h-1.5 rounded-full bg-rose-500 mr-1.5"></span>';
+            }
+
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+            return `
+                <tr class="hover:bg-slate-50/80 transition-colors animate-slide-in">
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${statusClass}">
+                            ${statusIcon}
+                            ${status}
+                        </span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="flex items-center">
+                            <div class="w-6 h-6 rounded-full ${partner.color} flex items-center justify-center text-xs font-bold mr-2">
+                                ${partner.name.substring(0, 2).toUpperCase()}
+                            </div>
+                            <div>
+                                <div class="text-sm font-medium text-slate-900">${partner.name}</div>
+                                <div class="text-xs text-slate-500 mono-truncate">${partner.id}</div>
+                            </div>
+                        </div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <span class="text-sm font-medium text-slate-900 mono-truncate">${docType}</span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <span class="inline-flex items-center text-sm text-slate-600">
+                            <i data-lucide="${direction === 'Inbound' ? 'arrow-down-left' : 'arrow-up-right'}" class="w-3.5 h-3.5 mr-1.5 ${direction === 'Inbound' ? 'text-blue-500' : 'text-purple-500'}"></i>
+                            ${direction}
+                        </span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <span class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-slate-100 text-slate-700">
+                            ${protocol}
+                        </span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right">
+                        <span class="text-sm text-slate-500 mono-truncate">${timeStr}</span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-center">
+                        <button class="text-slate-400 hover:text-fideX-600 transition-colors">
+                            <i data-lucide="more-horizontal" class="w-4 h-4"></i>
+                        </button>
+                    </td>
+                </tr>
+            `;
+        }
+
+        // Populate initial table
+        const tableBody = document.getElementById('traffic-table-body');
+        for (let i = 0; i < 8; i++) {
+            tableBody.innerHTML += generateRandomRow();
+        }
+        lucide.createIcons();
+
+        // Real-time updates
+        setInterval(() => {
+            const newRow = generateRandomRow();
+            tableBody.insertAdjacentHTML('afterbegin', newRow);
+            lucide.createIcons();
+            
+            // Keep only last 20 rows for performance
+            if (tableBody.children.length > 20) {
+                tableBody.removeChild(tableBody.lastChild);
+            }
+        }, 3000);
+
+        // Count up animation for metrics
+        const counters = document.querySelectorAll('.count-up');
+        counters.forEach(counter => {
+            const target = parseInt(counter.getAttribute('data-target'));
+            const duration = 2000;
+            const step = target / (duration / 16);
+            let current = 0;
+            
+            const timer = setInterval(() => {
+                current += step;
+                if (current >= target) {
+                    counter.textContent = target.toLocaleString();
+                    clearInterval(timer);
+                } else {
+                    counter.textContent = Math.floor(current).toLocaleString();
+                }
+            }, 16);
+        });
+
+        // Search functionality
+        document.getElementById('search-input').addEventListener('input', (e) => {
+            const searchTerm = e.target.value.toLowerCase();
+            const rows = tableBody.querySelectorAll('tr');
+            
+            rows.forEach(row => {
+                const text = row.textContent.toLowerCase();
+                row.style.display = text.includes(searchTerm) ? '' : 'none';
+            });
+        });
+
+        // Mobile menu toggle
+        const mobileMenuBtn = document.getElementById('mobile-menu-btn');
+        const mobileMenu = document.getElementById('mobile-menu');
+        const mobileSidebar = document.getElementById('mobile-sidebar');
+        let isMenuOpen = false;
+
+        mobileMenuBtn.addEventListener('click', () => {
+            isMenuOpen = !isMenuOpen;
+            if (isMenuOpen) {
+                mobileMenu.classList.remove('hidden');
+                setTimeout(() => {
+                    mobileSidebar.classList.remove('-translate-x-full');
+                }, 10);
+            } else {
+                mobileSidebar.classList.add('-translate-x-full');
+                setTimeout(() => {
+                    mobileMenu.classList.add('hidden');
+                }, 300);
+            }
+        });
+
+        mobileMenu.addEventListener('click', (e) => {
+            if (e.target === mobileMenu) {
+                mobileSidebar.classList.add('-translate-x-full');
+                setTimeout(() => {
+                    mobileMenu.classList.add('hidden');
+                    isMenuOpen = false;
+                }, 300);
+            }
+        });
+    </script>
+</body>
+</html>

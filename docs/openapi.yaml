@@ -1,0 +1,207 @@
+openapi: 3.0.3
+info:
+  title: FideX Protocol Gateway (Edge Node)
+  version: 1.0.0
+  description: >
+    The reference implementation for the Fast Integration for Digital Enterprises eXchange (FideX) protocol. 
+    This API handles local ERP transmission requests, public inbound JWE payloads, and asynchronous J-MDN receipts.
+
+servers:
+  - url: http://localhost:8080
+    description: Local ERP Interface (Internal Network)
+  - url: https://api.fidex.example.com
+    description: Public Edge Interface (External Network)
+
+paths:
+  /api/v1/transmit:
+    post:
+      summary: Transmit a Business Document
+      description: (Internal) Accepts a raw JSON payload from the local ERP, wraps it in the FideX cryptographic envelope, and queues it for transmission.
+      operationId: transmitDocument
+      tags:
+        - Internal ERP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransmitRequest'
+      responses:
+        '202':
+          description: Payload accepted and queued for transmission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransmitResponse'
+        '400':
+          description: Invalid request structure.
+
+  /api/v1/inbound:
+    post:
+      summary: Receive a FideX Envelope
+      description: (Public) The primary webhook for external Trading Partners to POST encrypted FideX envelopes (JWE).
+      operationId: receiveInbound
+      tags:
+        - Public B2B
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FidexEnvelope'
+      responses:
+        '202':
+          description: Envelope structurally valid and accepted for processing.
+        '401':
+          description: Unauthorized. Missing or invalid JWE.
+
+  /api/v1/receipt:
+    post:
+      summary: Receive a J-MDN Receipt
+      description: (Public) The webhook for external Trading Partners to POST asynchronous delivery receipts.
+      operationId: receiveReceipt
+      tags:
+        - Public B2B
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JmdnEnvelope'
+      responses:
+        '202':
+          description: Receipt structurally valid and accepted for processing.
+
+  /.well-known/jwks.json:
+    get:
+      summary: JSON Web Key Set (JWKS) Discovery
+      description: (Public) Exposes the Node's public RSA keys so Trading Partners can encrypt payloads destined for this node.
+      operationId: getJwks
+      tags:
+        - Discovery & Security
+      responses:
+        '200':
+          description: A standard JWKS object containing public keys.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      type: object
+                      description: A standard JWK object (RFC 7517)
+
+components:
+  schemas:
+    TransmitRequest:
+      type: object
+      required:
+        - destination_partner_id
+        - document_type
+        - payload
+      properties:
+        destination_partner_id:
+          type: string
+          example: "urn:gln:0614141000012"
+          description: The registered ID of the receiving trading partner.
+        document_type:
+          type: string
+          example: "GS1_ORDER_JSON"
+        receipt_webhook:
+          type: string
+          format: uri
+          description: Optional local webhook to notify the ERP when the J-MDN arrives.
+          example: "http://odoo.local/fidex/receipt"
+        payload:
+          type: object
+          description: The raw business document to be transmitted.
+
+    TransmitResponse:
+      type: object
+      properties:
+        message_id:
+          type: string
+          format: uuid
+          example: "fdx-uuid-1234-5678"
+        status:
+          type: string
+          example: "QUEUED"
+
+    RoutingHeader:
+      type: object
+      required:
+        - fidex_version
+        - message_id
+        - sender_id
+        - receiver_id
+      properties:
+        fidex_version:
+          type: string
+          example: "1.0"
+        message_id:
+          type: string
+          format: uuid
+        sender_id:
+          type: string
+          example: "urn:gln:0614141000005"
+        receiver_id:
+          type: string
+          example: "urn:gln:0614141000012"
+        document_type:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        receipt_webhook:
+          type: string
+          format: uri
+
+    FidexEnvelope:
+      type: object
+      required:
+        - routing
+        - payload
+      properties:
+        routing:
+          $ref: '#/components/schemas/RoutingHeader'
+        payload:
+          type: string
+          description: The compact JWE (JSON Web Encryption) string containing the signed JWS business document.
+          example: "eyJhbGciOiJSU0EtT0FFUCIsImVuYyI6IkEyNTZHQ00ifQ.OKOawDo13g... (JWE String)"
+
+    JmdnReceipt:
+      type: object
+      required:
+        - original_message_id
+        - status
+        - timestamp
+      properties:
+        original_message_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [DELIVERED, FAILED]
+        hash_verification:
+          type: string
+          description: The SHA-256 hash of the original decrypted payload to prove data integrity.
+        timestamp:
+          type: string
+          format: date-time
+        error_log:
+          type: string
+          nullable: true
+
+    JmdnEnvelope:
+      type: object
+      required:
+        - routing
+        - payload
+      properties:
+        routing:
+          $ref: '#/components/schemas/RoutingHeader'
+        payload:
+          type: string
+          description: The compact JWS (JSON Web Signature) string of the JmdnReceipt object.
