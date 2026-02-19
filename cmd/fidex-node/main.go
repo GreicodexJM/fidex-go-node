@@ -11,42 +11,66 @@ import (
 	"time"
 
 	"fidex-node/internal/api"
+	"fidex-node/internal/auth"
+	"fidex-node/internal/config"
 	"fidex-node/internal/crypto"
 	"fidex-node/internal/db"
+	"fidex-node/internal/queue"
 	"fidex-node/internal/watcher"
 )
+
+// Global config accessible to all packages
+var AppConfig *config.Config
 
 func main() {
 	log.Println("========================================")
 	log.Println("Starting FideX Edge Node...")
 	log.Println("========================================")
 
-	// 1. Initialize SQLite Database
+	// 1. Load Configuration (from JSON file, env vars, or CLI args)
+	log.Println("Loading configuration...")
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+	AppConfig = cfg
+	api.NodeConfig = cfg // Set config for API handlers
+	log.Printf("✓ Configuration loaded (Internal Port: %d, Public Port: %d)", cfg.InternalAPIPort, cfg.PublicAPIPort)
+
+	// 2. Initialize SQLite Database
 	log.Println("Initializing database...")
-	if err := db.InitDB("fidex_local.db"); err != nil {
+	if err := db.InitDB(cfg.DatabasePath); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	log.Println("✓ Database initialized successfully")
 
-	// 2. Load Configuration
-	log.Println("Loading configuration...")
-	config, err := db.GetConfig()
-	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+	// 3. Initialize default admin user
+	log.Println("Checking for default user...")
+	if err := api.InitializeDefaultUser(); err != nil {
+		log.Fatalf("Failed to initialize default user: %v", err)
 	}
-	log.Printf("✓ Configuration loaded (Internal Port: %d, Public Port: %d)", config.InternalAPIPort, config.PublicAPIPort)
 
-	// 2.5. Generate node keys if they don't exist
-	if config.PrivateKey == "" {
+	// 4. Generate node keys if they don't exist
+	if _, err := os.Stat(cfg.PrivateKeyPath); os.IsNotExist(err) {
 		log.Println("No private key found, generating RSA key pair...")
 		privateKeyPEM, publicKeyPEM, err := crypto.GenerateKeyPair()
 		if err != nil {
 			log.Fatalf("Failed to generate key pair: %v", err)
 		}
 
-		config.PrivateKey = privateKeyPEM
-		if err := db.UpdateConfig(config); err != nil {
+		// Create keys directory if it doesn't exist
+		if err := os.MkdirAll("./keys", 0700); err != nil {
+			log.Fatalf("Failed to create keys directory: %v", err)
+		}
+
+		// Save private key
+		if err := os.WriteFile(cfg.PrivateKeyPath, []byte(privateKeyPEM), 0600); err != nil {
 			log.Fatalf("Failed to save private key: %v", err)
+		}
+
+		// Save public key
+		if err := os.WriteFile(cfg.PublicKeyPath, []byte(publicKeyPEM), 0644); err != nil {
+			log.Fatalf("Failed to save public key: %v", err)
 		}
 
 		log.Println("✓ RSA key pair generated and saved")
@@ -57,16 +81,16 @@ func main() {
 	}
 
 	// Display the generated API key on first run
-	if config.InternalAPIKey != "" {
+	if cfg.InternalAPIKey != "" {
 		log.Println("========================================")
 		log.Println("IMPORTANT: Internal API Key (save this!)")
-		log.Printf("API Key: %s", config.InternalAPIKey)
+		log.Printf("API Key: %s", cfg.InternalAPIKey)
 		log.Println("Use this key in the Authorization header:")
-		log.Printf("  Authorization: Bearer %s", config.InternalAPIKey)
+		log.Printf("  Authorization: Bearer %s", cfg.InternalAPIKey)
 		log.Println("========================================")
 	}
 
-	// 3. Initialize File Watcher
+	// 5. Initialize File Watcher
 	log.Println("Starting file watcher...")
 	fw, err := watcher.NewFileWatcher()
 	if err != nil {
@@ -77,20 +101,49 @@ func main() {
 	}
 	log.Println("✓ File watcher started")
 
-	// 4. Parse allowed IPs
-	allowedIPs, err := api.ParseAllowedIPs(config.AllowedIPAddresses)
+	// 4. Initialize WebSocket Hub
+	log.Println("Initializing WebSocket hub...")
+	api.InitializeWebSocketHub()
+	log.Println("✓ WebSocket hub initialized")
+
+	// 4.2. Initialize Message Queue Worker
+	log.Println("Starting message queue worker...")
+	queueWorker := queue.NewWorker()
+	queueWorker.Start()
+	log.Println("✓ Message queue worker started")
+
+	// 4.5. Start session cleanup goroutine
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			auth.CleanupExpiredSessions()
+		}
+	}()
+
+	// 6. Parse allowed IPs
+	allowedIPs, err := api.ParseAllowedIPs(cfg.AllowedIPsString())
 	if err != nil {
 		log.Fatalf("Failed to parse allowed IPs: %v", err)
 	}
-	log.Printf("✓ IP Allowlist: %v (Enabled: %v)", allowedIPs, config.EnableIPAllowlist)
+	log.Printf("✓ IP Allowlist: %v (Enabled: %v)", cfg.AllowedIPAddresses, cfg.EnableIPAllowlist)
 
-	// 5. Setup HTTP Routers
-	internalRouter := api.SetupInternalRouter(allowedIPs, config.InternalAPIKey, config.EnableIPAllowlist)
+	// 7. Setup HTTP Routers
+	internalRouter := api.SetupInternalRouter(allowedIPs, cfg.InternalAPIKey, cfg.EnableIPAllowlist)
 	publicRouter := api.SetupPublicRouter()
 
-	// 6. Create HTTP Servers
+	// Mount auth routes on internal router
+	internalRouter.Mount("/api/auth", api.SetupAuthRouter())
+
+	// Mount dashboard routes on internal router
+	internalRouter.Mount("/api/dashboard", api.SetupDashboardRouter())
+
+	// Mount settings routes on internal router
+	internalRouter.Mount("/api/settings", api.SetupSettingsRouter())
+
+	// 8. Create HTTP Servers
 	internalServer := &http.Server{
-		Addr:         fmt.Sprintf("127.0.0.1:%d", config.InternalAPIPort),
+		Addr:         fmt.Sprintf("127.0.0.1:%d", cfg.InternalAPIPort),
 		Handler:      internalRouter,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
@@ -98,7 +151,7 @@ func main() {
 	}
 
 	publicServer := &http.Server{
-		Addr:         fmt.Sprintf(":%d", config.PublicAPIPort),
+		Addr:         fmt.Sprintf(":%d", cfg.PublicAPIPort),
 		Handler:      publicRouter,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
@@ -151,6 +204,11 @@ func main() {
 	} else {
 		log.Println("✓ File watcher stopped")
 	}
+
+	// Shutdown queue worker
+	log.Println("Stopping queue worker...")
+	queueWorker.Stop()
+	log.Println("✓ Queue worker stopped")
 
 	// Shutdown internal server
 	log.Println("Stopping internal API server...")

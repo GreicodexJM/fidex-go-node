@@ -78,16 +78,26 @@ func SetupInternalRouter(allowedIPs []string, apiKey string, enableIPAllowlist b
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Timeout(60 * time.Second))
 
-	// Security middleware
+	// Apply IP allowlist globally
 	if enableIPAllowlist && len(allowedIPs) > 0 {
 		r.Use(IPAllowlistMiddleware(allowedIPs))
 	}
-	if apiKey != "" {
-		r.Use(APIKeyMiddleware(apiKey))
-	}
 
-	// Internal API routes
+	// UI routes (no API key required)
+	r.Get("/login", serveLoginHandler)
+	r.Get("/dashboard", serveDashboardHandler)
+	r.Get("/js/*", serveStaticAssets)
+	r.Get("/css/*", serveStaticAssets)
+	r.Get("/components/*", serveStaticAssets)
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+	})
+
+	// Protected API routes (require API key)
 	r.Route("/api/v1", func(r chi.Router) {
+		if apiKey != "" {
+			r.Use(APIKeyMiddleware(apiKey))
+		}
 		r.Post("/transmit", transmitHandler)
 	})
 
@@ -117,6 +127,12 @@ func SetupPublicRouter() *chi.Mux {
 
 	// JWKS discovery endpoint
 	r.Get("/.well-known/jwks.json", jwksHandler)
+
+	// AS5 Discovery endpoint
+	r.Get("/.well-known/as5-configuration", as5ConfigHandler)
+
+	// Partner registration webhook
+	r.Post("/as5/onboarding/webhook", webhookRegistrationHandler)
 
 	return r
 }
@@ -238,6 +254,64 @@ func inboundHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Inbound message stored successfully: %s", envelope.Routing.MessageID)
 
+	// Check if this is a receipt to avoid infinite loops
+	if envelope.Routing.DocumentType == "receipt" {
+		log.Printf("Received message is a receipt, not sending confirmation")
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
+	// Queue an asynchronous receipt (MDN)
+	// In a real implementation, we would sign this receipt
+	receipt := JmdnReceipt{
+		OriginalMessageID: envelope.Routing.MessageID,
+		Status:            "processed",
+		Timestamp:         time.Now().Format(time.RFC3339),
+	}
+
+	// Create receipt envelope
+	receiptEnvelope := JmdnEnvelope{
+		Routing: RoutingHeader{
+			FidexVersion: "1.0",
+			MessageID:    uuid.New().String(),
+			SenderID:     envelope.Routing.ReceiverID, // We are the sender of the receipt
+			ReceiverID:   envelope.Routing.SenderID,   // Original sender is the receiver
+			DocumentType: "receipt",
+			Timestamp:    time.Now().Format(time.RFC3339),
+		},
+		// In production, Payload would be a JWS. Here we just JSON stringify the receipt
+	}
+
+	receiptJSON, _ := json.Marshal(receipt)
+	receiptEnvelope.Payload = string(receiptJSON)
+
+	// Create outbound message for the receipt
+	// We need to wrap the receipt envelope in a structure that the queue worker understands
+	// The queue worker expects a TransmitRequest-like payload structure to extract destination
+
+	receiptWorkerPayload := map[string]interface{}{
+		"destination_partner_id": envelope.Routing.SenderID,
+		"document_type":          "receipt",
+		"payload":                receiptEnvelope, // The actual content to send
+	}
+
+	workerPayloadBytes, _ := json.Marshal(receiptWorkerPayload)
+
+	receiptMsg := &db.Message{
+		MessageID: receiptEnvelope.Routing.MessageID,
+		Direction: db.DirectionOutbound,
+		Status:    db.StatusQueued,
+		Payload:   string(workerPayloadBytes),
+		CreatedAt: time.Now(),
+	}
+
+	if err := db.InsertMessage(receiptMsg); err != nil {
+		log.Printf("Failed to queue receipt: %v", err)
+		// We don't fail the request if receipt queuing fails, but we log it
+	} else {
+		log.Printf("Receipt queued for message %s", envelope.Routing.MessageID)
+	}
+
 	// Return 202 Accepted
 	w.WriteHeader(http.StatusAccepted)
 }
@@ -263,7 +337,7 @@ func receiptHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Store the receipt
-	// In production, you would verify the JWS signature and update the original message status
+	// In production, you would verify the JWS signature
 	receiptBytes, err := json.Marshal(envelope)
 	if err != nil {
 		log.Printf("Failed to marshal receipt: %v", err)
@@ -287,6 +361,36 @@ func receiptHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("Receipt stored successfully: %s", envelope.Routing.MessageID)
+
+	// Process the receipt payload to update the original message status
+	var receiptPayload JmdnReceipt
+	// The payload in the envelope is a JWS string, but for this implementation we assume it might be raw JSON or we need to parse it
+	// In a real AS5 implementation, we would verify the JWS signature and extract the payload
+	// For this mock implementation, we'll assume the payload field contains the JSON string of JmdnReceipt directly if it's not a JWS
+	// Or we try to unmarshal it directly if it's just JSON
+
+	// NOTE: In the current mock implementation of inbound/outbound, we are storing raw JSON in Payload for simplicity
+	// If envelope.Payload is a JWS string, we would need to decode it.
+	// Let's assume for now it's a JSON string for simplicity of this task, or try to decode it.
+
+	// Try to unmarshal the payload as JmdnReceipt
+	if err := json.Unmarshal([]byte(envelope.Payload), &receiptPayload); err == nil {
+		// Update the original message status
+		if receiptPayload.OriginalMessageID != "" {
+			newStatus := db.StatusDelivered
+			if receiptPayload.Status == "error" || receiptPayload.Status == "failed" {
+				newStatus = db.StatusFailed
+			}
+
+			if err := db.UpdateMessageStatus(receiptPayload.OriginalMessageID, string(newStatus)); err != nil {
+				log.Printf("Failed to update original message status: %v", err)
+			} else {
+				log.Printf("Updated status of message %s to %s based on receipt", receiptPayload.OriginalMessageID, newStatus)
+			}
+		}
+	} else {
+		log.Printf("Failed to parse receipt payload: %v", err)
+	}
 
 	// Return 202 Accepted
 	w.WriteHeader(http.StatusAccepted)

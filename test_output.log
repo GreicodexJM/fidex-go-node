@@ -1,0 +1,191 @@
+[0;32mStarting FideX Test Scenario[0m
+Starting Docker containers...
+time="2026-02-19T16:11:00-04:00" level=warning msg="/home/javier/Documents/Projects/Startup_Ideas/FideXNode/docker-compose.test.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+#1 [internal] load local bake definitions
+#1 reading from stdin 1.05kB done
+#1 DONE 0.0s
+
+#2 [node-a internal] load build definition from Dockerfile
+#2 transferring dockerfile: 1.19kB done
+#2 DONE 0.0s
+
+#3 [node-a internal] load metadata for docker.io/library/golang:1.24-alpine
+#3 ...
+
+#4 [auth] library/alpine:pull token for registry-1.docker.io
+#4 DONE 0.0s
+
+#5 [auth] library/golang:pull token for registry-1.docker.io
+#5 DONE 0.0s
+
+#3 [node-b internal] load metadata for docker.io/library/golang:1.24-alpine
+#3 ...
+
+#6 [node-b internal] load metadata for docker.io/library/alpine:latest
+#6 DONE 0.6s
+
+#3 [node-b internal] load metadata for docker.io/library/golang:1.24-alpine
+#3 DONE 1.2s
+
+#7 [node-b internal] load .dockerignore
+#7 transferring context: 2B done
+#7 DONE 0.0s
+
+#8 [node-b stage-1 1/6] FROM docker.io/library/alpine:latest@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659
+#8 DONE 0.0s
+
+#9 [node-a stage-1 2/6] RUN apk --no-cache add ca-certificates tzdata
+#9 CACHED
+
+#10 [node-a stage-1 3/6] RUN addgroup -g 1000 fidex &&     adduser -D -u 1000 -G fidex fidex
+#10 CACHED
+
+#11 [node-a stage-1 4/6] WORKDIR /app
+#11 CACHED
+
+#12 [node-a builder 1/7] FROM docker.io/library/golang:1.24-alpine@sha256:8bee1901f1e530bfb4a7850aa7a479d17ae3a18beb6e09064ed54cfd245b7191
+#12 resolve docker.io/library/golang:1.24-alpine@sha256:8bee1901f1e530bfb4a7850aa7a479d17ae3a18beb6e09064ed54cfd245b7191 0.0s done
+#12 ...
+
+#13 [node-b internal] load build context
+#13 transferring context: 10.08kB 0.0s done
+#13 DONE 0.0s
+
+#12 [node-a builder 1/7] FROM docker.io/library/golang:1.24-alpine@sha256:8bee1901f1e530bfb4a7850aa7a479d17ae3a18beb6e09064ed54cfd245b7191
+#12 sha256:c95d909b2488ff78a51d01ca745429e6d281e314006f231fe6e9f219cf5432ca 0B / 126B 0.2s
+#12 sha256:8bee1901f1e530bfb4a7850aa7a479d17ae3a18beb6e09064ed54cfd245b7191 10.30kB / 10.30kB done
+#12 sha256:757779acac4af1b349a20f357c7296097b4a0b89da4ad0e370b339060077282a 1.92kB / 1.92kB done
+#12 sha256:ebe4e0721205a049b6806724e1ccb05c99e334b1dc1f59e0729b31130bce3aed 2.19kB / 2.19kB done
+#12 sha256:8f78851c25d251496dd39ebce311b4d914a4a97c0ba1983039165a05fd96b925 0B / 296.08kB 0.2s
+#12 sha256:f7bdfd728ac2ad72d43b82689890dc698260d3a1049845f48fb3fb942df6c581 0B / 79.13MB 0.2s
+#12 sha256:c95d909b2488ff78a51d01ca745429e6d281e314006f231fe6e9f219cf5432ca 126B / 126B 0.2s done
+#12 sha256:4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1 0B / 32B 0.4s
+#12 sha256:8f78851c25d251496dd39ebce311b4d914a4a97c0ba1983039165a05fd96b925 296.08kB / 296.08kB 0.5s done
+#12 sha256:4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1 32B / 32B 0.4s done
+#12 extracting sha256:8f78851c25d251496dd39ebce311b4d914a4a97c0ba1983039165a05fd96b925
+#12 sha256:8f78851c25d251496dd39ebce311b4d914a4a97c0ba1983039165a05fd96b925 296.08kB / 296.08kB 0.5s done
+#12 sha256:4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1 32B / 32B 0.4s done
+#12 extracting sha256:8f78851c25d251496dd39ebce311b4d914a4a97c0ba1983039165a05fd96b925 0.1s done
+#12 sha256:f7bdfd728ac2ad72d43b82689890dc698260d3a1049845f48fb3fb942df6c581 5.24MB / 79.13MB 0.9s
+#12 sha256:f7bdfd728ac2ad72d43b82689890dc698260d3a1049845f48fb3fb942df6c581 10.49MB / 79.13MB 1.1s
+#12 sha256:f7bdfd728ac2ad72d43b82689890dc698260d3a1049845f48fb3fb942df6c581 15.73MB / 79.13MB 1.3s
+#12 sha256:f7bdfd728ac2ad72d43b82689890dc698260d3a1049845f48fb3fb942df6c581 22.02MB / 79.13MB 1.5s
+#12 sha256:f7bdfd728ac2ad72d43b82689890dc698260d3a1049845f48fb3fb942df6c581 27.26MB / 79.13MB 1.7s
+#12 sha256:f7bdfd728ac2ad72d43b82689890dc698260d3a1049845f48fb3fb942df6c581 35.65MB / 79.13MB 2.0s
+#12 sha256:f7bdfd728ac2ad72d43b82689890dc698260d3a1049845f48fb3fb942df6c581 41.94MB / 79.13MB 2.2s
+#12 sha256:f7bdfd728ac2ad72d43b82689890dc698260d3a1049845f48fb3fb942df6c581 46.14MB / 79.13MB 2.4s
+#12 sha256:f7bdfd728ac2ad72d43b82689890dc698260d3a1049845f48fb3fb942df6c581 53.48MB / 79.13MB 2.6s
+#12 sha256:f7bdfd728ac2ad72d43b82689890dc698260d3a1049845f48fb3fb942df6c581 58.72MB / 79.13MB 2.8s
+#12 sha256:f7bdfd728ac2ad72d43b82689890dc698260d3a1049845f48fb3fb942df6c581 63.96MB / 79.13MB 3.0s
+#12 sha256:f7bdfd728ac2ad72d43b82689890dc698260d3a1049845f48fb3fb942df6c581 72.35MB / 79.13MB 3.2s
+#12 sha256:f7bdfd728ac2ad72d43b82689890dc698260d3a1049845f48fb3fb942df6c581 77.59MB / 79.13MB 3.4s
+#12 extracting sha256:f7bdfd728ac2ad72d43b82689890dc698260d3a1049845f48fb3fb942df6c581
+#12 sha256:f7bdfd728ac2ad72d43b82689890dc698260d3a1049845f48fb3fb942df6c581 79.13MB / 79.13MB 3.5s done
+#12 extracting sha256:f7bdfd728ac2ad72d43b82689890dc698260d3a1049845f48fb3fb942df6c581 2.5s done
+#12 extracting sha256:c95d909b2488ff78a51d01ca745429e6d281e314006f231fe6e9f219cf5432ca
+#12 extracting sha256:c95d909b2488ff78a51d01ca745429e6d281e314006f231fe6e9f219cf5432ca done
+#12 extracting sha256:4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1 done
+#12 DONE 6.5s
+
+#14 [node-a builder 2/7] RUN apk add --no-cache git make
+#14 1.461 ( 1/14) Installing brotli-libs (1.2.0-r0)
+#14 1.582 ( 2/14) Installing c-ares (1.34.6-r0)
+#14 1.632 ( 3/14) Installing libunistring (1.4.1-r0)
+#14 1.803 ( 4/14) Installing libidn2 (2.3.8-r0)
+#14 1.859 ( 5/14) Installing nghttp2-libs (1.68.0-r0)
+#14 1.908 ( 6/14) Installing nghttp3 (1.13.1-r0)
+#14 1.956 ( 7/14) Installing libpsl (0.21.5-r3)
+#14 2.005 ( 8/14) Installing zstd-libs (1.5.7-r2)
+#14 2.131 ( 9/14) Installing libcurl (8.17.0-r1)
+#14 2.260 (10/14) Installing libexpat (2.7.4-r0)
+#14 2.312 (11/14) Installing pcre2 (10.47-r0)
+#14 2.459 (12/14) Installing git (2.52.0-r0)
+#14 3.564 (13/14) Installing git-init-template (2.52.0-r0)
+#14 3.603 (14/14) Installing make (4.4.1-r3)
+#14 3.689 Executing busybox-1.37.0-r30.trigger
+#14 3.704 OK: 20.8 MiB in 31 packages
+#14 DONE 3.9s
+
+#15 [node-a builder 3/7] WORKDIR /build
+#15 DONE 0.1s
+
+#16 [node-a builder 4/7] COPY go.mod go.sum ./
+#16 DONE 0.1s
+
+#17 [node-b builder 5/7] RUN go mod download
+#17 DONE 10.9s
+
+#18 [node-b builder 6/7] COPY . .
+#18 DONE 1.0s
+
+#19 [node-a builder 7/7] RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags="-w -s" -o fidex-node ./cmd/fidex-node
+#19 DONE 17.1s
+
+#20 [node-b stage-1 5/6] COPY --from=builder /build/fidex-node .
+#20 DONE 0.1s
+
+#21 [node-b stage-1 6/6] RUN mkdir -p /app/fidex/outbox /app/fidex/archive &&     chown -R fidex:fidex /app
+#21 DONE 0.3s
+
+#22 [node-b] exporting to image
+#22 exporting layers
+#22 exporting layers 0.3s done
+#22 writing image sha256:4ccb78a9a826f13d9ec0bd02353b6dba8c72c75c66c72e295bdc27fe9adf08bf done
+#22 naming to docker.io/library/fidexnode-node-b 0.0s done
+#22 DONE 0.3s
+
+#23 [node-a] exporting to image
+#23 exporting layers 0.3s done
+#23 writing image sha256:121e12e1778a4ad8cbb91e8677ba5a0de1cc844d197e4346273abb7e1010d9f0 0.0s done
+#23 naming to docker.io/library/fidexnode-node-a 0.0s done
+#23 DONE 0.4s
+
+#24 [node-b] resolving provenance for metadata file
+#24 DONE 0.0s
+
+#25 [node-a] resolving provenance for metadata file
+#25 DONE 0.0s
+ fidexnode-node-a  Built
+ fidexnode-node-b  Built
+ Network fidexnode_fidex-test-net  Creating
+ Network fidexnode_fidex-test-net  Created
+ Container fidexnode-node-a-1  Creating
+ Container fidexnode-node-b-1  Creating
+ Container fidexnode-node-b-1  Created
+ Container fidexnode-node-a-1  Created
+ Container fidexnode-node-a-1  Starting
+ Container fidexnode-node-b-1  Starting
+ Container fidexnode-node-b-1  Started
+Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint fidexnode-node-a-1 (c31f8053a539af136199a43657ed944dc2cf7b4fec914cf89b2d2c2c48bef4e6): failed to bind host port 0.0.0.0:8081/tcp: address already in use
+Waiting for nodes to start...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+Waiting for Node A...
+[0;31mNode A failed to start[0m

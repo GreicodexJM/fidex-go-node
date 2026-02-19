@@ -135,10 +135,35 @@ func isIPAllowed(clientIP string, allowedIPs []string) bool {
 }
 
 // ParseAllowedIPs parses a JSON array string of allowed IPs
-func ParseAllowedIPs(jsonStr string) ([]string, error) {
+// It also supports comma-separated strings for backward compatibility
+func ParseAllowedIPs(input string) ([]string, error) {
 	var ips []string
-	if err := json.Unmarshal([]byte(jsonStr), &ips); err != nil {
-		return nil, fmt.Errorf("failed to parse allowed IPs: %w", err)
+
+	// Try parsing as JSON first
+	if err := json.Unmarshal([]byte(input), &ips); err == nil {
+		return ips, nil
 	}
-	return ips, nil
+
+	// If JSON parsing fails, assume it's a comma-separated string
+	// This handles the case where data was saved incorrectly
+	parts := strings.Split(input, ",")
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			ips = append(ips, trimmed)
+		}
+	}
+
+	// If we found IPs via splitting, return them
+	if len(ips) > 0 {
+		return ips, nil
+	}
+
+	// If input was empty, return empty list
+	if input == "" {
+		return []string{}, nil
+	}
+
+	// If we couldn't parse anything meaningful but input wasn't empty, return error
+	return nil, fmt.Errorf("failed to parse allowed IPs: invalid format")
 }

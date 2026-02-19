@@ -1,5 +1,5 @@
 # Multi-stage build for minimal image size
-FROM golang:1.21-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git make
@@ -35,7 +35,7 @@ WORKDIR /app
 COPY --from=builder /build/fidex-node .
 
 # Create necessary directories
-RUN mkdir -p /app/fidex/outbox /app/fidex/archive && \
+RUN mkdir -p /app/keys /app/fidex/inbox /app/fidex/outbox /app/fidex/archive  && \
     chown -R fidex:fidex /app
 
 # Switch to non-root user

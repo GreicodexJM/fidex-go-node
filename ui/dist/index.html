@@ -1,1 +1,48 @@
-<!DOCTYPE html><html><head><title>FideX Edge Node</title></head><body><h1>FideX Edge Node</h1><p>Status: Running</p></body></html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - FideX Edge Node</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- AlpineJS -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    
+    <!-- QR Code Scanner -->
+    <script src="https://unpkg.com/html5-qrcode"></script>
+    
+    <!-- Custom Styles -->
+    <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body class="bg-slate-50 h-screen overflow-hidden">
+    <div class="flex h-full">
+        <!-- Sidebar Component -->
+        <div id="sidebar-container"></div>
+
+        <!-- Main Content -->
+        <div class="flex-1 overflow-y-auto bg-slate-50 p-8">
+            <!-- Dashboard Section -->
+            <div id="dashboard-container"></div>
+
+            <!-- Partners Section -->
+            <div id="partners-container"></div>
+
+            <!-- Settings Section -->
+            <div id="settings-container"></div>
+        </div>
+    </div>
+
+    <!-- WebSocket Status Indicator -->
+    <div id="ws-status-container"></div>
+
+    <!-- Load Scripts -->
+    <script src="/js/utils.js"></script>
+    <script src="/js/dashboard.js"></script>
+    <script src="/js/partners.js"></script>
+    <script src="/js/settings.js"></script>
+    <script src="/js/app.js"></script>
+</body>
+</html>

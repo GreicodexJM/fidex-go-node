@@ -3,7 +3,6 @@ package db
 import (
 	"database/sql"
 	"fmt"
-	"math/rand"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -16,6 +15,7 @@ type MessageStatus string
 
 const (
 	StatusQueued      MessageStatus = "QUEUED"
+	StatusSent        MessageStatus = "SENT"
 	StatusDelivered   MessageStatus = "DELIVERED"
 	StatusFailed      MessageStatus = "FAILED"
 	StatusQuarantined MessageStatus = "QUARANTINED"
@@ -31,26 +31,15 @@ const (
 
 // Message represents a FideX AS5 message
 type Message struct {
-	ID        int64            `json:"id"`
-	MessageID string           `json:"message_id"`
-	Direction MessageDirection `json:"direction"`
-	Status    MessageStatus    `json:"status"`
-	Payload   string           `json:"payload"`
-	CreatedAt time.Time        `json:"created_at"`
-}
-
-// Config represents the node's configuration stored in the database
-type Config struct {
-	TenantID   string
-	APISecret  string
-	PrivateKey string
-	IsPaired   bool
-	// Security configuration
-	InternalAPIPort    int
-	PublicAPIPort      int
-	InternalAPIKey     string
-	AllowedIPAddresses string // JSON array of allowed IPs
-	EnableIPAllowlist  bool
+	ID          int64            `json:"id"`
+	MessageID   string           `json:"message_id"`
+	Direction   MessageDirection `json:"direction"`
+	Status      MessageStatus    `json:"status"`
+	Payload     string           `json:"payload"`
+	RetryCount  int              `json:"retry_count"`
+	NextRetryAt *time.Time       `json:"next_retry_at"`
+	LastError   string           `json:"last_error"`
+	CreatedAt   time.Time        `json:"created_at"`
 }
 
 // InitDB initializes the SQLite database connection and creates the schema
@@ -89,17 +78,6 @@ func InitDB(dbPath string) error {
 
 // createSchema creates all necessary tables if they don't exist
 func createSchema() error {
-	// Config table - single row configuration
-	createConfigTable := `
-	CREATE TABLE IF NOT EXISTS config (
-		id INTEGER PRIMARY KEY CHECK (id = 1),
-		tenant_id TEXT,
-		api_secret TEXT,
-		private_key TEXT,
-		is_paired BOOLEAN DEFAULT 0
-	);
-	`
-
 	// Messages table - stores all FideX messages
 	createMessagesTable := `
 	CREATE TABLE IF NOT EXISTS messages (
@@ -108,6 +86,9 @@ func createSchema() error {
 		direction TEXT NOT NULL,
 		status TEXT NOT NULL,
 		payload TEXT NOT NULL,
+		retry_count INTEGER DEFAULT 0,
+		next_retry_at DATETIME,
+		last_error TEXT,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 	`
@@ -129,6 +110,8 @@ func createSchema() error {
 		partner_id TEXT NOT NULL UNIQUE,
 		name TEXT NOT NULL,
 		jwks_url TEXT NOT NULL,
+		message_endpoint TEXT,
+		mdn_receipt_endpoint TEXT,
 		public_key_jwks TEXT,
 		last_key_refresh DATETIME,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -140,24 +123,6 @@ func createSchema() error {
 	createPartnerIDIndex := `
 	CREATE INDEX IF NOT EXISTS idx_trading_partners_partner_id ON trading_partners(partner_id);
 	`
-
-	// Execute config table creation
-	if _, err := DB.Exec(createConfigTable); err != nil {
-		return fmt.Errorf("failed to create config table: %w", err)
-	}
-
-	// Initialize config row if it doesn't exist
-	var count int
-	err := DB.QueryRow("SELECT COUNT(*) FROM config").Scan(&count)
-	if err != nil {
-		return fmt.Errorf("failed to check config table: %w", err)
-	}
-	if count == 0 {
-		_, err = DB.Exec("INSERT INTO config (id, is_paired) VALUES (1, 0)")
-		if err != nil {
-			return fmt.Errorf("failed to initialize config: %w", err)
-		}
-	}
 
 	// Execute messages table creation
 	if _, err := DB.Exec(createMessagesTable); err != nil {
@@ -183,53 +148,45 @@ func createSchema() error {
 		return fmt.Errorf("failed to create partner_id index: %w", err)
 	}
 
-	// Run migrations to add new columns if they don't exist
-	if err := runMigrations(); err != nil {
-		return fmt.Errorf("failed to run migrations: %w", err)
+	// Users table - for dashboard authentication
+	createUsersTable := `
+	CREATE TABLE IF NOT EXISTS users (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		username TEXT UNIQUE NOT NULL,
+		password_hash TEXT NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	`
+
+	// Sessions table - for dashboard session management
+	createSessionsTable := `
+	CREATE TABLE IF NOT EXISTS sessions (
+		session_id TEXT PRIMARY KEY,
+		user_id INTEGER NOT NULL,
+		expires_at DATETIME NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+	);
+	`
+
+	// Create index on expires_at for efficient cleanup
+	createSessionsExpiresIndex := `
+	CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+	`
+
+	// Execute users table creation
+	if _, err := DB.Exec(createUsersTable); err != nil {
+		return fmt.Errorf("failed to create users table: %w", err)
 	}
 
-	return nil
-}
-
-// runMigrations handles schema upgrades for existing databases
-func runMigrations() error {
-	// Check if security columns exist
-	var columnExists int
-	err := DB.QueryRow(`
-		SELECT COUNT(*) FROM pragma_table_info('config') 
-		WHERE name = 'internal_api_port'
-	`).Scan(&columnExists)
-
-	if err != nil {
-		return fmt.Errorf("failed to check for security columns: %w", err)
+	// Execute sessions table creation
+	if _, err := DB.Exec(createSessionsTable); err != nil {
+		return fmt.Errorf("failed to create sessions table: %w", err)
 	}
 
-	// If columns don't exist, add them
-	if columnExists == 0 {
-		migrations := []string{
-			`ALTER TABLE config ADD COLUMN internal_api_port INTEGER DEFAULT 8080`,
-			`ALTER TABLE config ADD COLUMN public_api_port INTEGER DEFAULT 8443`,
-			`ALTER TABLE config ADD COLUMN internal_api_key TEXT`,
-			`ALTER TABLE config ADD COLUMN allowed_ip_addresses TEXT DEFAULT '["127.0.0.1","::1"]'`,
-			`ALTER TABLE config ADD COLUMN enable_ip_allowlist BOOLEAN DEFAULT 1`,
-		}
-
-		for _, migration := range migrations {
-			if _, err := DB.Exec(migration); err != nil {
-				return fmt.Errorf("failed to execute migration: %w", err)
-			}
-		}
-
-		// Generate a secure API key for existing installations
-		apiKey, err := generateSecureAPIKey()
-		if err != nil {
-			return fmt.Errorf("failed to generate API key: %w", err)
-		}
-
-		_, err = DB.Exec(`UPDATE config SET internal_api_key = ? WHERE id = 1`, apiKey)
-		if err != nil {
-			return fmt.Errorf("failed to set initial API key: %w", err)
-		}
+	// Create sessions expires index
+	if _, err := DB.Exec(createSessionsExpiresIndex); err != nil {
+		return fmt.Errorf("failed to create sessions expires index: %w", err)
 	}
 
 	return nil
@@ -256,12 +213,15 @@ func InsertMessage(msg *Message) error {
 
 	// Insert the message
 	result, err := DB.Exec(
-		`INSERT INTO messages (message_id, direction, status, payload, created_at) 
-		 VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO messages (message_id, direction, status, payload, retry_count, next_retry_at, last_error, created_at) 
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		msg.MessageID,
 		msg.Direction,
 		msg.Status,
 		msg.Payload,
+		msg.RetryCount,
+		msg.NextRetryAt,
+		msg.LastError,
 		msg.CreatedAt,
 	)
 	if err != nil {
@@ -323,6 +283,26 @@ func UpdateMessageStatus(messageID string, status string) error {
 	return nil
 }
 
+// UpdateMessageRetry updates the retry information for a message
+func UpdateMessageRetry(messageID string, retryCount int, nextRetryAt *time.Time, lastError string) error {
+	if messageID == "" {
+		return fmt.Errorf("message_id cannot be empty")
+	}
+
+	_, err := DB.Exec(
+		`UPDATE messages SET retry_count = ?, next_retry_at = ?, last_error = ? WHERE message_id = ?`,
+		retryCount,
+		nextRetryAt,
+		lastError,
+		messageID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update message retry info: %w", err)
+	}
+
+	return nil
+}
+
 // GetMessageByID retrieves a message by its message_id
 func GetMessageByID(messageID string) (*Message, error) {
 	if messageID == "" {
@@ -331,10 +311,10 @@ func GetMessageByID(messageID string) (*Message, error) {
 
 	var msg Message
 	err := DB.QueryRow(
-		`SELECT id, message_id, direction, status, payload, created_at 
+		`SELECT id, message_id, direction, status, payload, retry_count, next_retry_at, last_error, created_at 
 		 FROM messages WHERE message_id = ?`,
 		messageID,
-	).Scan(&msg.ID, &msg.MessageID, &msg.Direction, &msg.Status, &msg.Payload, &msg.CreatedAt)
+	).Scan(&msg.ID, &msg.MessageID, &msg.Direction, &msg.Status, &msg.Payload, &msg.RetryCount, &msg.NextRetryAt, &msg.LastError, &msg.CreatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("message not found: %s", messageID)
@@ -349,7 +329,7 @@ func GetMessageByID(messageID string) (*Message, error) {
 // GetQueuedMessages retrieves all messages with QUEUED status
 func GetQueuedMessages() ([]Message, error) {
 	rows, err := DB.Query(
-		`SELECT id, message_id, direction, status, payload, created_at 
+		`SELECT id, message_id, direction, status, payload, retry_count, next_retry_at, last_error, created_at 
 		 FROM messages WHERE status = ? ORDER BY created_at ASC`,
 		StatusQueued,
 	)
@@ -361,7 +341,7 @@ func GetQueuedMessages() ([]Message, error) {
 	var messages []Message
 	for rows.Next() {
 		var msg Message
-		if err := rows.Scan(&msg.ID, &msg.MessageID, &msg.Direction, &msg.Status, &msg.Payload, &msg.CreatedAt); err != nil {
+		if err := rows.Scan(&msg.ID, &msg.MessageID, &msg.Direction, &msg.Status, &msg.Payload, &msg.RetryCount, &msg.NextRetryAt, &msg.LastError, &msg.CreatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan message: %w", err)
 		}
 		messages = append(messages, msg)
@@ -372,88 +352,6 @@ func GetQueuedMessages() ([]Message, error) {
 	}
 
 	return messages, nil
-}
-
-// GetConfig retrieves the node configuration
-func GetConfig() (*Config, error) {
-	var cfg Config
-	var tenantID, apiSecret, privateKey, internalAPIKey, allowedIPs sql.NullString
-
-	err := DB.QueryRow(
-		`SELECT tenant_id, api_secret, private_key, is_paired,
-		        COALESCE(internal_api_port, 8080), 
-		        COALESCE(public_api_port, 8443),
-		        internal_api_key,
-		        COALESCE(allowed_ip_addresses, '["127.0.0.1","::1"]'),
-		        COALESCE(enable_ip_allowlist, 1)
-		 FROM config WHERE id = 1`,
-	).Scan(&tenantID, &apiSecret, &privateKey, &cfg.IsPaired,
-		&cfg.InternalAPIPort, &cfg.PublicAPIPort, &internalAPIKey,
-		&allowedIPs, &cfg.EnableIPAllowlist)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to get config: %w", err)
-	}
-
-	if tenantID.Valid {
-		cfg.TenantID = tenantID.String
-	}
-	if apiSecret.Valid {
-		cfg.APISecret = apiSecret.String
-	}
-	if privateKey.Valid {
-		cfg.PrivateKey = privateKey.String
-	}
-	if internalAPIKey.Valid {
-		cfg.InternalAPIKey = internalAPIKey.String
-	}
-	if allowedIPs.Valid {
-		cfg.AllowedIPAddresses = allowedIPs.String
-	}
-
-	return &cfg, nil
-}
-
-// UpdateConfig updates the node configuration
-func UpdateConfig(cfg *Config) error {
-	if cfg == nil {
-		return fmt.Errorf("config cannot be nil")
-	}
-
-	_, err := DB.Exec(
-		`UPDATE config SET tenant_id = ?, api_secret = ?, private_key = ?, is_paired = ?,
-		 internal_api_port = ?, public_api_port = ?, internal_api_key = ?,
-		 allowed_ip_addresses = ?, enable_ip_allowlist = ?
-		 WHERE id = 1`,
-		cfg.TenantID,
-		cfg.APISecret,
-		cfg.PrivateKey,
-		cfg.IsPaired,
-		cfg.InternalAPIPort,
-		cfg.PublicAPIPort,
-		cfg.InternalAPIKey,
-		cfg.AllowedIPAddresses,
-		cfg.EnableIPAllowlist,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to update config: %w", err)
-	}
-
-	return nil
-}
-
-// generateSecureAPIKey generates a cryptographically secure random API key
-func generateSecureAPIKey() (string, error) {
-	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	key := make([]byte, 32)
-
-	// Use time-based seed (in production, use crypto/rand for better security)
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	for i := range key {
-		key[i] = charset[r.Intn(len(charset))]
-	}
-
-	return string(key), nil
 }
 
 // Close closes the database connection

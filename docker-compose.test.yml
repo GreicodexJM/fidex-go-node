@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  node-a:
+    build: .
+    ports:
+      - "8091:8080" # Internal API
+      - "8444:8443" # Public API
+    environment:
+      - FIDEX_NODE_ID=node-a
+      - FIDEX_ORG_NAME=Node A Corp
+      - FIDEX_PUBLIC_DOMAIN=node-a
+      - FIDEX_INTERNAL_PORT=8080
+      - FIDEX_PUBLIC_PORT=8443
+      - FIDEX_ALLOWED_IPS=127.0.0.1,::1,172.16.0.0/12,192.168.0.0/16,10.0.0.0/8
+      - FIDEX_ENABLE_IP_ALLOWLIST=true
+      - FIDEX_DB_PATH=/app/fidex_local.db
+      - FIDEX_PRIVATE_KEY_PATH=/app/keys/private_key.pem
+      - FIDEX_PUBLIC_KEY_PATH=/app/keys/public_key.pem
+    volumes:
+      - ./test_data/node-a:/app/fidex
+    networks:
+      - fidex-test-net
+
+  node-b:
+    build: .
+    ports:
+      - "8092:8080" # Internal API
+      - "8445:8443" # Public API
+    environment:
+      - FIDEX_NODE_ID=node-b
+      - FIDEX_ORG_NAME=Node B Inc
+      - FIDEX_PUBLIC_DOMAIN=node-b
+      - FIDEX_INTERNAL_PORT=8080
+      - FIDEX_PUBLIC_PORT=8443
+      - FIDEX_ALLOWED_IPS=127.0.0.1,::1,172.16.0.0/12,192.168.0.0/16,10.0.0.0/8
+      - FIDEX_ENABLE_IP_ALLOWLIST=true
+      - FIDEX_DB_PATH=/app/fidex_local.db
+      - FIDEX_PRIVATE_KEY_PATH=/app/keys/private_key.pem
+      - FIDEX_PUBLIC_KEY_PATH=/app/keys/public_key.pem
+    volumes:
+      - ./test_data/node-b:/app/fidex
+    networks:
+      - fidex-test-net
+
+networks:
+  fidex-test-net:
+    driver: bridge
