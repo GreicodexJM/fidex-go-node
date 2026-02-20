@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"time"
 
+	"fidex-node/internal/constants"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
@@ -25,22 +27,38 @@ func SetupInternalRouter(allowedIPs []string, apiKey string, enableIPAllowlist b
 		r.Use(IPAllowlistMiddleware(allowedIPs))
 	}
 
-	// UI routes (no API key required)
-	r.Get("/login", serveLoginHandler)
-	r.Get("/dashboard", serveDashboardHandler)
-	r.Get("/js/*", serveStaticAssets)
-	r.Get("/css/*", serveStaticAssets)
-	r.Get("/components/*", serveStaticAssets)
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
+	// Root redirect to login
+	r.Get(constants.RouteRoot, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, constants.RouteLogin, http.StatusSeeOther)
 	})
 
-	// Protected API routes (require API key)
-	r.Route("/api/v1", func(r chi.Router) {
+	// ========================================
+	// WebUI - HTML Pages (no auth required on these routes, handled by pages)
+	// ========================================
+	r.Get(constants.RouteLogin, serveLoginHandler)
+	r.Get(constants.RouteDashboard, serveDashboardHandler)
+
+	// Static assets (JS, CSS, components)
+	r.Get(constants.RouteJS, serveStaticAssets)
+	r.Get(constants.RouteCSS, serveStaticAssets)
+	r.Get(constants.RouteComponents, serveStaticAssets)
+
+	// ========================================
+	// API Routes - Organized by functionality
+	// ========================================
+
+	// Constants API (public access for frontend)
+	r.Get("/api/constants", constantsHandler)
+
+	// Note: Auth, Dashboard, and Settings routes are mounted separately in main.go
+	// to allow for modular router composition
+
+	// ERP Integration API (protected with API key)
+	r.Route(constants.APIV1, func(r chi.Router) {
 		if apiKey != "" {
 			r.Use(APIKeyMiddleware(apiKey))
 		}
-		r.Post("/transmit", transmitHandler)
+		r.Post(constants.RouteTransmitRel, transmitHandler)
 	})
 
 	return r
@@ -59,22 +77,18 @@ func SetupPublicRouter() *chi.Mux {
 	r.Use(middleware.Timeout(60 * time.Second))
 
 	// Health check
-	r.Get("/health", healthHandler)
+	r.Get(constants.RouteHealth, healthHandler)
 
 	// Public B2B API routes
-	r.Route("/api/v1", func(r chi.Router) {
-		r.Post("/inbound", inboundHandler)
-		r.Post("/receipt", receiptHandler)
+	r.Route(constants.APIV1, func(r chi.Router) {
+		r.Post(constants.RouteInboundRel, inboundHandler)
+		r.Post(constants.RouteReceiptRel, receiptHandler)
+		r.Post(constants.RouteRegisterRel, webhookRegistrationHandler)
 	})
 
-	// JWKS discovery endpoint
-	r.Get("/.well-known/jwks.json", jwksHandler)
-
-	// AS5 Discovery endpoint
-	r.Get("/.well-known/as5-configuration", as5ConfigHandler)
-
-	// Partner registration webhook
-	r.Post("/as5/onboarding/webhook", webhookRegistrationHandler)
+	// Discovery endpoints
+	r.Get(constants.RouteJWKS, jwksHandler)
+	r.Get(constants.RouteAS5Configuration, as5ConfigHandler)
 
 	return r
 }

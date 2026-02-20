@@ -30,7 +30,7 @@ document.addEventListener('alpine:init', () => {
         
         async loadConfig() {
             try {
-                const config = await window.utils.api.get('/api/settings/config');
+                const config = await window.utils.api.get(window.ROUTES.settings.config);
                 this.config = {
                     organizationName: config.organization_name || '',
                     publicDomain: config.public_domain || '',
@@ -57,7 +57,7 @@ document.addEventListener('alpine:init', () => {
             };
             
             try {
-                await window.utils.api.put('/api/settings/config', payload);
+                await window.utils.api.put(window.ROUTES.settings.config, payload);
                 window.utils.showNotification('Configuration saved successfully', 'success');
             } catch (error) {
                 console.error('Failed to save config:', error);
@@ -71,7 +71,7 @@ document.addEventListener('alpine:init', () => {
             }
             
             try {
-                await window.utils.api.post('/api/settings/rotate-keys', {});
+                await window.utils.api.post(window.ROUTES.settings.rotateKeys, {});
                 window.utils.showNotification('Keys rotated successfully', 'success');
                 this.loadConfig();
             } catch (error) {
@@ -82,7 +82,7 @@ document.addEventListener('alpine:init', () => {
         
         async loadUsers() {
             try {
-                const data = await window.utils.api.get('/api/settings/users');
+                const data = await window.utils.api.get(window.ROUTES.settings.users);
                 this.users = data.users || [];
             } catch (error) {
                 console.error('Failed to load users:', error);
@@ -97,7 +97,7 @@ document.addEventListener('alpine:init', () => {
             }
             
             try {
-                await window.utils.api.post('/api/settings/users', this.newUser);
+                await window.utils.api.post(window.ROUTES.settings.users, this.newUser);
                 window.utils.showNotification('User created successfully', 'success');
                 this.newUser = {username: '', password: ''};
                 this.loadUsers();
@@ -111,7 +111,7 @@ document.addEventListener('alpine:init', () => {
             if (!confirm('Are you sure you want to delete this user?')) return;
             
             try {
-                await window.utils.api.delete(`/api/settings/users/${id}`);
+                await window.utils.api.delete(window.ROUTES.settings.userById(id));
                 window.utils.showNotification('User deleted successfully', 'success');
                 this.loadUsers();
             } catch (error) {
@@ -127,7 +127,7 @@ document.addEventListener('alpine:init', () => {
             }
             
             try {
-                await window.utils.api.put('/api/settings/password', {
+                await window.utils.api.put(window.ROUTES.settings.password, {
                     current_password: this.passwordChange.currentPassword,
                     new_password: this.passwordChange.newPassword
                 });

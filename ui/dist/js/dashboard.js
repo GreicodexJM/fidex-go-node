@@ -13,7 +13,7 @@ document.addEventListener('alpine:init', () => {
         
         async loadMetrics() {
             try {
-                const data = await window.utils.api.get('/api/dashboard/metrics');
+                const data = await window.utils.api.get(window.ROUTES.dashboard.metrics);
                 this.metrics = {
                     delivered: data.messages_delivered_24h || 0,
                     queued: data.messages_queued || 0,
@@ -28,7 +28,7 @@ document.addEventListener('alpine:init', () => {
         
         async loadMessages() {
             try {
-                const data = await window.utils.api.get('/api/dashboard/messages?limit=10');
+                const data = await window.utils.api.get(window.ROUTES.dashboard.messages + '?limit=10');
                 this.messages = data.messages || [];
             } catch (error) {
                 console.error('Failed to load messages:', error);

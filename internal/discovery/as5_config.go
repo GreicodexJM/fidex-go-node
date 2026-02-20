@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"fidex-node/internal/constants"
 	"fidex-node/internal/crypto"
 )
 
@@ -32,11 +33,11 @@ func GenerateAS5Config(config NodeConfig) *AS5Configuration {
 	return &AS5Configuration{
 		Issuer:                      config.NodeID,
 		OrganizationName:            config.OrganizationName,
-		JWKSUri:                     config.BaseURL + "/.well-known/jwks.json",
-		MessageEndpoint:             config.BaseURL + "/api/v1/inbound",
-		MDNReceiptEndpoint:          config.BaseURL + "/api/v1/receipt",
+		JWKSUri:                     config.BaseURL + constants.RouteJWKS,
+		MessageEndpoint:             config.BaseURL + constants.RouteInbound,
+		MDNReceiptEndpoint:          config.BaseURL + constants.RouteReceipt,
 		AlgorithmsSupported:         []string{"RS256", "RSA-OAEP", "A256GCM"},
-		WebhookRegistrationEndpoint: config.BaseURL + "/as5/onboarding/webhook",
+		WebhookRegistrationEndpoint: config.BaseURL + constants.RouteRegister,
 	}
 }
 

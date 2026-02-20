@@ -14,7 +14,7 @@ document.addEventListener('alpine:init', () => {
         
         async loadPartners() {
             try {
-                const data = await window.utils.api.get('/api/dashboard/partners');
+                const data = await window.utils.api.get(window.ROUTES.dashboard.partners);
                 this.list = data.partners || [];
             } catch (error) {
                 console.error('Failed to load partners:', error);
@@ -31,7 +31,7 @@ document.addEventListener('alpine:init', () => {
             this.showDiscoveryStatus('info', '⏳ Discovering partner...');
             
             try {
-                const data = await window.utils.api.post('/api/dashboard/partners/discover', {
+                const data = await window.utils.api.post(window.ROUTES.dashboard.discover, {
                     discovery_url: this.discoveryUrl
                 });
                 
@@ -82,7 +82,7 @@ document.addEventListener('alpine:init', () => {
         
         downloadQR() {
             const link = document.createElement('a');
-            link.href = '/api/dashboard/qr?size=512';
+            link.href = window.ROUTES.dashboard.qr + '?size=512';
             link.download = 'fidex-partner-qr.png';
             link.click();
         },
@@ -91,7 +91,7 @@ document.addEventListener('alpine:init', () => {
             if (!confirm('Are you sure you want to remove this partner?')) return;
             
             try {
-                await window.utils.api.delete(`/api/settings/partners/${id}`);
+                await window.utils.api.delete(window.ROUTES.settings.partnerById(id));
                 window.utils.showNotification('Partner removed successfully', 'success');
                 this.loadPartners();
                 Alpine.store('dashboard').loadMetrics();

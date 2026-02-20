@@ -58,7 +58,7 @@ func TestGenerateAS5Config(t *testing.T) {
 	if as5Config.MDNReceiptEndpoint != config.BaseURL+"/api/v1/receipt" {
 		t.Errorf("Unexpected MDN receipt endpoint: %s", as5Config.MDNReceiptEndpoint)
 	}
-	if as5Config.WebhookRegistrationEndpoint != config.BaseURL+"/as5/onboarding/webhook" {
+	if as5Config.WebhookRegistrationEndpoint != config.BaseURL+"/api/v1/register" {
 		t.Errorf("Unexpected webhook endpoint: %s", as5Config.WebhookRegistrationEndpoint)
 	}
 	if len(as5Config.AlgorithmsSupported) == 0 {
@@ -78,7 +78,7 @@ func TestFetchAS5Config(t *testing.T) {
 		MessageEndpoint:             "https://remote.example.com/api/v1/inbound",
 		MDNReceiptEndpoint:          "https://remote.example.com/api/v1/receipt",
 		AlgorithmsSupported:         []string{"RS256", "RSA-OAEP", "A256GCM"},
-		WebhookRegistrationEndpoint: "https://remote.example.com/as5/onboarding/webhook",
+		WebhookRegistrationEndpoint: "https://remote.example.com/api/v1/register",
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -217,7 +217,7 @@ func TestCompleteDiscoveryHandshake(t *testing.T) {
 				MessageEndpoint:             nodeBServer.URL + "/api/v1/inbound",
 				MDNReceiptEndpoint:          nodeBServer.URL + "/api/v1/receipt",
 				AlgorithmsSupported:         []string{"RS256", "RSA-OAEP", "A256GCM"},
-				WebhookRegistrationEndpoint: nodeBServer.URL + "/as5/onboarding/webhook",
+				WebhookRegistrationEndpoint: nodeBServer.URL + "/api/v1/register",
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(config)
@@ -228,7 +228,7 @@ func TestCompleteDiscoveryHandshake(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(nodeBJWKS))
 
-		case "/as5/onboarding/webhook":
+		case "/api/v1/register":
 			t.Log("Step 3: Node A registering with Node B")
 			// Handle registration request
 			var req RegistrationRequest
@@ -366,7 +366,7 @@ func TestWebhookRegistrationHandler(t *testing.T) {
 		MessageEndpoint:             "https://remote.example.com/api/v1/inbound",
 		MDNReceiptEndpoint:          "https://remote.example.com/api/v1/receipt",
 		AlgorithmsSupported:         []string{"RS256", "RSA-OAEP", "A256GCM"},
-		WebhookRegistrationEndpoint: "https://remote.example.com/as5/onboarding/webhook",
+		WebhookRegistrationEndpoint: "https://remote.example.com/api/v1/register",
 		SecurityToken:               token,
 	}
 

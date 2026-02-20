@@ -13,6 +13,7 @@ import (
 	"fidex-node/internal/api"
 	"fidex-node/internal/auth"
 	"fidex-node/internal/config"
+	"fidex-node/internal/constants"
 	"fidex-node/internal/crypto"
 	"fidex-node/internal/db"
 	"fidex-node/internal/queue"
@@ -133,13 +134,13 @@ func main() {
 	publicRouter := api.SetupPublicRouter()
 
 	// Mount auth routes on internal router
-	internalRouter.Mount("/api/auth", api.SetupAuthRouter())
+	internalRouter.Mount(constants.APIAuth, api.SetupAuthRouter())
 
 	// Mount dashboard routes on internal router
-	internalRouter.Mount("/api/dashboard", api.SetupDashboardRouter())
+	internalRouter.Mount(constants.APIDashboard, api.SetupDashboardRouter())
 
 	// Mount settings routes on internal router
-	internalRouter.Mount("/api/settings", api.SetupSettingsRouter())
+	internalRouter.Mount(constants.APISettings, api.SetupSettingsRouter())
 
 	// 8. Create HTTP Servers
 	internalServer := &http.Server{
@@ -161,7 +162,11 @@ func main() {
 	// 7. Start HTTP Servers in goroutines
 	go func() {
 		log.Printf("Starting Internal API Server on %s", internalServer.Addr)
-		log.Println("  - POST /api/v1/transmit (Protected: IP Allowlist + API Key)")
+		log.Printf("  - POST %s%s (Protected: IP Allowlist + API Key)", constants.APIV1, constants.RouteTransmitRel)
+		log.Printf("  - GET  %s (Frontend Constants API)", "/api/constants")
+		log.Printf("  - *    %s* (Auth APIs)", constants.APIAuth+"/*")
+		log.Printf("  - *    %s* (Dashboard APIs)", constants.APIDashboard+"/*")
+		log.Printf("  - *    %s* (Settings APIs)", constants.APISettings+"/*")
 		if err := internalServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Internal server error: %v", err)
 		}
@@ -169,10 +174,12 @@ func main() {
 
 	go func() {
 		log.Printf("Starting Public API Server on %s", publicServer.Addr)
-		log.Println("  - GET  /health")
-		log.Println("  - POST /api/v1/inbound")
-		log.Println("  - POST /api/v1/receipt")
-		log.Println("  - GET  /.well-known/jwks.json")
+		log.Printf("  - GET  %s", constants.RouteHealth)
+		log.Printf("  - POST %s%s", constants.APIV1, constants.RouteInboundRel)
+		log.Printf("  - POST %s%s", constants.APIV1, constants.RouteReceiptRel)
+		log.Printf("  - POST %s%s", constants.APIV1, constants.RouteRegisterRel)
+		log.Printf("  - GET  %s", constants.RouteJWKS)
+		log.Printf("  - GET  %s", constants.RouteAS5Configuration)
 		if err := publicServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Public server error: %v", err)
 		}

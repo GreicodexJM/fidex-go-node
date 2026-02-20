@@ -39,27 +39,6 @@ func as5ConfigHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("AS5 configuration requested from %s", r.RemoteAddr)
 }
 
-// getBaseURL extracts the base URL from the request
-// This will be used to construct absolute URLs in the discovery document
-func getBaseURL(r *http.Request) string {
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-
-	// Check for X-Forwarded-Proto header (if behind a proxy)
-	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
-		scheme = proto
-	}
-
-	host := r.Host
-	if host == "" {
-		host = "localhost:8443"
-	}
-
-	return scheme + "://" + host
-}
-
 // webhookRegistrationHandler handles POST /as5/onboarding/webhook
 // Accepts registration requests from partners during discovery handshake
 func webhookRegistrationHandler(w http.ResponseWriter, r *http.Request) {

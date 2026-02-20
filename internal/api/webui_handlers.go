@@ -6,6 +6,9 @@ import (
 	"net/http"
 )
 
+// HTML Page Handlers
+// These handlers serve the static HTML pages for the WebUI
+
 // serveLoginHandler serves the login page
 func serveLoginHandler(w http.ResponseWriter, r *http.Request) {
 	data, err := ioutil.ReadFile("ui/login.html")
@@ -50,4 +53,24 @@ func serveStaticAssets(w http.ResponseWriter, r *http.Request) {
 
 	fullPath := "ui/dist" + path
 	http.ServeFile(w, r, fullPath)
+}
+
+// getBaseURL extracts the base URL from the request
+func getBaseURL(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+
+	// Check X-Forwarded-Proto header
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		scheme = proto
+	}
+
+	host := r.Host
+	if fwdHost := r.Header.Get("X-Forwarded-Host"); fwdHost != "" {
+		host = fwdHost
+	}
+
+	return scheme + "://" + host
 }

@@ -36,7 +36,7 @@ document.addEventListener('alpine:init', () => {
         
         connectWebSocket() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            this.ws = new WebSocket(`${protocol}//${window.location.host}/api/dashboard/ws`);
+            this.ws = new WebSocket(`${protocol}//${window.location.host}${window.ROUTES.dashboard.ws}`);
             
             this.ws.onopen = () => {
                 this.wsStatus = 'connected';
@@ -75,17 +75,20 @@ document.addEventListener('alpine:init', () => {
         
         async logout() {
             try {
-                await fetch('/api/auth/logout', {method: 'POST'});
+                await fetch(window.ROUTES.auth.logout, {method: 'POST'});
             } catch (error) {
                 console.error('Logout failed:', error);
             }
-            window.location.href = '/login';
+            window.location.href = window.ROUTES.pages.login;
         }
     });
 });
 
 // Initialize application when DOM is ready
 document.addEventListener('DOMContentLoaded', async () => {
+    // Initialize route constants first
+    await window.ROUTES.init();
+    
     // Load all HTML components
     await window.utils.initializeComponents();
     
