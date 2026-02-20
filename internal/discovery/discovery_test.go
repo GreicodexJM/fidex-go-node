@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"fidex-node/internal/constants"
 	"fidex-node/internal/crypto"
 	"fidex-node/internal/db"
 )
@@ -49,16 +50,16 @@ func TestGenerateAS5Config(t *testing.T) {
 	if as5Config.OrganizationName != config.OrganizationName {
 		t.Errorf("Expected org name %s, got %s", config.OrganizationName, as5Config.OrganizationName)
 	}
-	if as5Config.JWKSUri != config.BaseURL+"/.well-known/jwks.json" {
+	if as5Config.JWKSUri != config.BaseURL+constants.RouteJWKS {
 		t.Errorf("Unexpected JWKS URI: %s", as5Config.JWKSUri)
 	}
-	if as5Config.MessageEndpoint != config.BaseURL+"/api/v1/inbound" {
+	if as5Config.MessageEndpoint != config.BaseURL+constants.RouteInbound {
 		t.Errorf("Unexpected message endpoint: %s", as5Config.MessageEndpoint)
 	}
-	if as5Config.MDNReceiptEndpoint != config.BaseURL+"/api/v1/receipt" {
+	if as5Config.MDNReceiptEndpoint != config.BaseURL+constants.RouteReceipt {
 		t.Errorf("Unexpected MDN receipt endpoint: %s", as5Config.MDNReceiptEndpoint)
 	}
-	if as5Config.WebhookRegistrationEndpoint != config.BaseURL+"/api/v1/register" {
+	if as5Config.WebhookRegistrationEndpoint != config.BaseURL+constants.RouteRegister {
 		t.Errorf("Unexpected webhook endpoint: %s", as5Config.WebhookRegistrationEndpoint)
 	}
 	if len(as5Config.AlgorithmsSupported) == 0 {
