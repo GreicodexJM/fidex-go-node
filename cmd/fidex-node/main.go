@@ -143,7 +143,7 @@ func main() {
 
 	// 8. Create HTTP Servers
 	internalServer := &http.Server{
-		Addr:         fmt.Sprintf("127.0.0.1:%d", cfg.InternalAPIPort),
+		Addr:         fmt.Sprintf(":%d", cfg.InternalAPIPort),
 		Handler:      internalRouter,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,

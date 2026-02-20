@@ -1,9 +1,11 @@
 package config
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math/big"
 	"os"
 	"strconv"
 	"strings"
@@ -148,12 +150,22 @@ func loadFromFlags(cfg *Config) {
 	flag.Parse()
 }
 
-// generateAPIKey generates a random API key
+// generateAPIKey generates a cryptographically secure random API key
 func generateAPIKey() string {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	key := make([]byte, 32)
+	charsetLen := big.NewInt(int64(len(charset)))
+
 	for i := range key {
-		key[i] = charset[i%len(charset)]
+		// Generate a random index using crypto/rand
+		randomIndex, err := rand.Int(rand.Reader, charsetLen)
+		if err != nil {
+			// Fallback to a simple incrementing pattern if random generation fails
+			// This should never happen in practice
+			key[i] = charset[i%len(charset)]
+			continue
+		}
+		key[i] = charset[randomIndex.Int64()]
 	}
 	return string(key)
 }

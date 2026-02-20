@@ -4,13 +4,13 @@ services:
   node-a:
     build: .
     ports:
-      - "8091:8080" # Internal API
+      - "8091:8091" # Internal API
       - "8444:8443" # Public API
     environment:
       - FIDEX_NODE_ID=node-a
       - FIDEX_ORG_NAME=Node A Corp
       - FIDEX_PUBLIC_DOMAIN=node-a
-      - FIDEX_INTERNAL_PORT=8080
+      - FIDEX_INTERNAL_PORT=8091
       - FIDEX_PUBLIC_PORT=8443
       - FIDEX_ALLOWED_IPS=127.0.0.1,::1,172.16.0.0/12,192.168.0.0/16,10.0.0.0/8
       - FIDEX_ENABLE_IP_ALLOWLIST=true
@@ -25,13 +25,13 @@ services:
   node-b:
     build: .
     ports:
-      - "8092:8080" # Internal API
+      - "8092:8092" # Internal API
       - "8445:8443" # Public API
     environment:
       - FIDEX_NODE_ID=node-b
       - FIDEX_ORG_NAME=Node B Inc
       - FIDEX_PUBLIC_DOMAIN=node-b
-      - FIDEX_INTERNAL_PORT=8080
+      - FIDEX_INTERNAL_PORT=8092
       - FIDEX_PUBLIC_PORT=8443
       - FIDEX_ALLOWED_IPS=127.0.0.1,::1,172.16.0.0/12,192.168.0.0/16,10.0.0.0/8
       - FIDEX_ENABLE_IP_ALLOWLIST=true

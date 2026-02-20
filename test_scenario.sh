@@ -10,8 +10,10 @@ echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}FideX Two-Node Test Scenario${NC}"
 echo -e "${GREEN}========================================${NC}"
 sudo rm -rf test_data
-sudo mkdir -p "test_data/node-a" "test_data/node-b"
-sudo chmod aog+w "test_data/node-a" "test_data/node-b"
+mkdir -p "test_data/node-a" "test_data/node-b" 
+chown 1000:1000 -R test_data
+#sudo chmod aog+w "test_data/node-a" "test_data/node-b"
+
 # 1. Start Containers
 echo -e "${YELLOW}Starting Docker containers...${NC}"
 docker-compose -f docker-compose.test.yml up -d
