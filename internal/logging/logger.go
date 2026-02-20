@@ -42,15 +42,21 @@ func (l *Logger) log(ctx context.Context, level string, format string, args ...i
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	message := fmt.Sprintf(format, args...)
 
-	// Extract request ID from context if available
+	// Extract request ID and user ID from context if available
 	requestID := extractRequestID(ctx)
 	userID := extractUserID(ctx)
 
 	var contextInfo string
-	if requestID != "" {
-		contextInfo = fmt.Sprintf(" [req_id=%s", requestID)
+	if requestID != "" || userID != 0 {
+		contextInfo = " ["
+		if requestID != "" {
+			contextInfo += fmt.Sprintf("req_id=%s", requestID)
+			if userID != 0 {
+				contextInfo += " "
+			}
+		}
 		if userID != 0 {
-			contextInfo += fmt.Sprintf(" user_id=%d", userID)
+			contextInfo += fmt.Sprintf("user_id=%d", userID)
 		}
 		contextInfo += "]"
 	}
@@ -65,7 +71,8 @@ func extractRequestID(ctx context.Context) string {
 	if ctx == nil {
 		return ""
 	}
-	if requestID, ok := ctx.Value(ContextKey("request_id")).(string); ok {
+	// Try with string key directly (used by API package)
+	if requestID, ok := ctx.Value("request_id").(string); ok {
 		return requestID
 	}
 	return ""
@@ -76,13 +83,14 @@ func extractUserID(ctx context.Context) int64 {
 	if ctx == nil {
 		return 0
 	}
-	if userID, ok := ctx.Value(ContextKey("user_id")).(int64); ok {
+	// Try with string key directly (used by API package)
+	if userID, ok := ctx.Value("user_id").(int64); ok {
 		return userID
 	}
 	return 0
 }
 
-// ContextKey is a type for context keys
+// ContextKey is a type for context keys (for backward compatibility)
 type ContextKey string
 
 // Default logger instance
