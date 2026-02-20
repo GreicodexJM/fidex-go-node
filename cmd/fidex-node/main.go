@@ -76,20 +76,21 @@ func main() {
 
 		log.Println("✓ RSA key pair generated and saved")
 		log.Println("========================================")
-		log.Println("Public Key (share with trading partners):")
-		log.Println(publicKeyPEM)
+		log.Println("⚠ IMPORTANT: New RSA key pair generated")
+		log.Printf("  Public key saved to: %s", cfg.PublicKeyPath)
+		log.Printf("  Private key saved to: %s (keep this secure!)", cfg.PrivateKeyPath)
+		log.Println("  Share your public key with trading partners via the JWKS endpoint")
 		log.Println("========================================")
 	}
 
-	// Display the generated API key on first run
-	if cfg.InternalAPIKey != "" {
-		log.Println("========================================")
-		log.Println("IMPORTANT: Internal API Key (save this!)")
-		log.Printf("API Key: %s", cfg.InternalAPIKey)
-		log.Println("Use this key in the Authorization header:")
-		log.Printf("  Authorization: Bearer %s", cfg.InternalAPIKey)
-		log.Println("========================================")
-	}
+	// Warn about API key security on first run
+	log.Println("========================================")
+	log.Println("⚠ SECURITY: Internal API Key")
+	log.Println("  Your internal API key is configured and active")
+	log.Println("  Access it via: FIDEX_API_KEY environment variable or config file")
+	log.Println("  Use it in requests: Authorization: Bearer <your-api-key>")
+	log.Println("  NEVER log or expose this key in production!")
+	log.Println("========================================")
 
 	// 5. Initialize File Watcher
 	log.Println("Starting file watcher...")
@@ -113,12 +114,16 @@ func main() {
 	queueWorker.Start()
 	log.Println("✓ Message queue worker started")
 
-	// 4.5. Start session cleanup goroutine
+	// 4.5. Start session cleanup goroutine with error handling
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
-			auth.CleanupExpiredSessions()
+			if err := auth.CleanupExpiredSessions(); err != nil {
+				log.Printf("ERROR: Failed to cleanup expired sessions: %v", err)
+			} else {
+				log.Println("✓ Expired sessions cleaned up")
+			}
 		}
 	}()
 

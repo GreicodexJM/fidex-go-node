@@ -410,32 +410,11 @@ func TestConfig_Integration(t *testing.T) {
 	})
 }
 
-// TestLoadFromFlags tests the loadFromFlags function
-// Note: This test has limitations due to flag.Parse() global state
-func TestLoadFromFlags(t *testing.T) {
-	t.Run("verifies flag definitions exist", func(t *testing.T) {
-		// We can't fully test loadFromFlags due to flag.Parse() side effects
-		// But we can verify the function exists and can be called
-		cfg := &Config{
-			NodeID:          "test-node",
-			InternalAPIPort: 8080,
-		}
-
-		// This will define flags but not parse them
-		// Note: In a real scenario, these flags would be set via command line
-		loadFromFlags(cfg)
-
-		// The config should remain unchanged since no flags were actually parsed
-		if cfg.NodeID != "test-node" {
-			t.Errorf("expected NodeID to remain 'test-node', got '%s'", cfg.NodeID)
-		}
-	})
-}
-
 // Note: Load() function is not fully testable in unit tests due to:
 // 1. flag.Parse() can only be called once and has global side effects
 // 2. It combines multiple functions that are individually tested
 // Coverage: loadFromFile (100%), loadFromEnv (100%), generateAPIKey (tested separately)
+// Flag handling is now integrated directly into Load() to prevent double-parsing bugs
 
 // BenchmarkGenerateAPIKey benchmarks the API key generation
 func BenchmarkGenerateAPIKey(b *testing.B) {

@@ -1,0 +1,189 @@
+package container
+
+import (
+	"database/sql"
+	"fmt"
+	"log"
+	"os"
+
+	"fidex-node/internal/config"
+	"fidex-node/internal/crypto"
+	"fidex-node/internal/dashboard"
+	"fidex-node/internal/db"
+	"fidex-node/internal/discovery"
+	"fidex-node/internal/domain"
+	"fidex-node/internal/queue"
+	"fidex-node/internal/repository"
+)
+
+// Container holds all application dependencies and provides dependency injection
+type Container struct {
+	// Configuration
+	Config *config.Config
+
+	// Database connection
+	DB *sql.DB
+
+	// Repositories
+	MessageRepo domain.MessageRepository
+	PartnerRepo domain.PartnerRepository
+	UserRepo    domain.UserRepository
+	SessionRepo domain.SessionRepository
+
+	// Services
+	CryptoService    *crypto.AS5Engine
+	DiscoveryService *discovery.DiscoveryService
+	TokenStore       *discovery.TokenStore
+
+	// Workers
+	QueueWorker  *queue.Worker
+	WebSocketHub *dashboard.Hub
+}
+
+// NewContainer creates and initializes a new service container with all dependencies
+func NewContainer(cfg *config.Config) (*Container, error) {
+	container := &Container{
+		Config: cfg,
+	}
+
+	// Initialize database
+	if err := container.initDatabase(); err != nil {
+		return nil, fmt.Errorf("failed to initialize database: %w", err)
+	}
+
+	// Initialize repositories
+	if err := container.initRepositories(); err != nil {
+		return nil, fmt.Errorf("failed to initialize repositories: %w", err)
+	}
+
+	// Initialize crypto service
+	if err := container.initCryptoService(); err != nil {
+		return nil, fmt.Errorf("failed to initialize crypto service: %w", err)
+	}
+
+	// Initialize discovery service
+	if err := container.initDiscoveryService(); err != nil {
+		return nil, fmt.Errorf("failed to initialize discovery service: %w", err)
+	}
+
+	// Initialize workers
+	if err := container.initWorkers(); err != nil {
+		return nil, fmt.Errorf("failed to initialize workers: %w", err)
+	}
+
+	log.Println("✓ Service container initialized successfully")
+	return container, nil
+}
+
+// initDatabase initializes the database connection and schema
+func (c *Container) initDatabase() error {
+	if err := db.InitDB(c.Config.DatabasePath); err != nil {
+		return fmt.Errorf("failed to initialize database: %w", err)
+	}
+
+	c.DB = db.DB // Get the global DB for now (will be removed after full migration)
+	log.Println("✓ Database initialized")
+	return nil
+}
+
+// initRepositories creates repository instances with proper dependency injection
+func (c *Container) initRepositories() error {
+	// Use proper repository implementations with injected database connection
+	c.MessageRepo = repository.NewSQLiteMessageRepository(c.DB)
+	c.PartnerRepo = repository.NewSQLitePartnerRepository(c.DB)
+	c.UserRepo = repository.NewSQLiteUserRepository(c.DB)
+	c.SessionRepo = repository.NewSQLiteSessionRepository(c.DB)
+
+	log.Println("✓ Repositories initialized")
+	return nil
+}
+
+// initCryptoService initializes the cryptography service
+func (c *Container) initCryptoService() error {
+	// Load private key
+	privateKeyPEM, err := loadPrivateKey(c.Config.PrivateKeyPath)
+	if err != nil {
+		return fmt.Errorf("failed to load private key: %w", err)
+	}
+
+	// Create AS5 engine
+	engine, err := crypto.NewAS5Engine(privateKeyPEM, c.Config.NodeID)
+	if err != nil {
+		return fmt.Errorf("failed to create AS5 engine: %w", err)
+	}
+
+	c.CryptoService = engine
+	log.Println("✓ Crypto service initialized")
+	return nil
+}
+
+// initDiscoveryService initializes the partner discovery service
+func (c *Container) initDiscoveryService() error {
+	// Create token store for security tokens
+	c.TokenStore = discovery.NewTokenStore()
+
+	// Create node configuration for discovery
+	// Build the base URL from the public domain and port
+	baseURL := fmt.Sprintf("https://%s:%d", c.Config.PublicDomain, c.Config.PublicAPIPort)
+	nodeConfig := discovery.NodeConfig{
+		NodeID:           c.Config.NodeID,
+		OrganizationName: c.Config.OrganizationName,
+		BaseURL:          baseURL,
+	}
+
+	// Create discovery service
+	c.DiscoveryService = discovery.NewDiscoveryService(nodeConfig, c.TokenStore)
+
+	log.Println("✓ Discovery service initialized")
+	return nil
+}
+
+// initWorkers initializes background workers
+func (c *Container) initWorkers() error {
+	// Initialize queue worker
+	c.QueueWorker = queue.NewWorker()
+
+	// Initialize WebSocket hub
+	c.WebSocketHub = dashboard.NewHub()
+	go c.WebSocketHub.Run()
+
+	log.Println("✓ Workers initialized")
+	return nil
+}
+
+// Close gracefully shuts down all services and closes connections
+func (c *Container) Close() error {
+	log.Println("Shutting down service container...")
+
+	// Stop queue worker
+	if c.QueueWorker != nil {
+		log.Println("Stopping queue worker...")
+		c.QueueWorker.Stop()
+	}
+
+	// Close database connection
+	if c.DB != nil {
+		log.Println("Closing database connection...")
+		if err := c.DB.Close(); err != nil {
+			log.Printf("Error closing database: %v", err)
+			return err
+		}
+	}
+
+	log.Println("✓ Service container shut down successfully")
+	return nil
+}
+
+// Helper functions
+
+func loadPrivateKey(path string) (string, error) {
+	data, err := readFile(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read private key file: %w", err)
+	}
+	return string(data), nil
+}
+
+func readFile(path string) ([]byte, error) {
+	return os.ReadFile(path)
+}

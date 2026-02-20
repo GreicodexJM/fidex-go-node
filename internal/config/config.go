@@ -55,10 +55,23 @@ func Load() (*Config, error) {
 		DatabasePath:       "./fidex_local.db",
 	}
 
-	// Load from JSON config file if specified
+	// Define all flags first (before parsing)
 	configFile := flag.String("config", "", "Path to JSON config file")
+	nodeID := flag.String("node-id", cfg.NodeID, "Node ID")
+	orgName := flag.String("org-name", cfg.OrganizationName, "Organization name")
+	domain := flag.String("domain", cfg.PublicDomain, "Public domain")
+	internalPort := flag.Int("internal-port", cfg.InternalAPIPort, "Internal API port")
+	publicPort := flag.Int("public-port", cfg.PublicAPIPort, "Public API port")
+	apiKey := flag.String("api-key", cfg.InternalAPIKey, "Internal API key")
+	enableIPAllowlist := flag.Bool("enable-ip-allowlist", cfg.EnableIPAllowlist, "Enable IP allowlist")
+	privateKey := flag.String("private-key", cfg.PrivateKeyPath, "Private key path")
+	publicKey := flag.String("public-key", cfg.PublicKeyPath, "Public key path")
+	dbPath := flag.String("db", cfg.DatabasePath, "Database path")
+
+	// Parse flags once
 	flag.Parse()
 
+	// Load from JSON config file if specified
 	if *configFile != "" {
 		if err := loadFromFile(cfg, *configFile); err != nil {
 			return nil, fmt.Errorf("failed to load config file: %w", err)
@@ -68,8 +81,37 @@ func Load() (*Config, error) {
 	// Override with environment variables
 	loadFromEnv(cfg)
 
-	// Override with command-line flags
-	loadFromFlags(cfg)
+	// Override with command-line flags (only if explicitly set)
+	if flag.Lookup("node-id").Value.String() != flag.Lookup("node-id").DefValue {
+		cfg.NodeID = *nodeID
+	}
+	if flag.Lookup("org-name").Value.String() != flag.Lookup("org-name").DefValue {
+		cfg.OrganizationName = *orgName
+	}
+	if flag.Lookup("domain").Value.String() != flag.Lookup("domain").DefValue {
+		cfg.PublicDomain = *domain
+	}
+	if flag.Lookup("internal-port").Value.String() != flag.Lookup("internal-port").DefValue {
+		cfg.InternalAPIPort = *internalPort
+	}
+	if flag.Lookup("public-port").Value.String() != flag.Lookup("public-port").DefValue {
+		cfg.PublicAPIPort = *publicPort
+	}
+	if flag.Lookup("api-key").Value.String() != flag.Lookup("api-key").DefValue {
+		cfg.InternalAPIKey = *apiKey
+	}
+	if flag.Lookup("enable-ip-allowlist").Value.String() != flag.Lookup("enable-ip-allowlist").DefValue {
+		cfg.EnableIPAllowlist = *enableIPAllowlist
+	}
+	if flag.Lookup("private-key").Value.String() != flag.Lookup("private-key").DefValue {
+		cfg.PrivateKeyPath = *privateKey
+	}
+	if flag.Lookup("public-key").Value.String() != flag.Lookup("public-key").DefValue {
+		cfg.PublicKeyPath = *publicKey
+	}
+	if flag.Lookup("db").Value.String() != flag.Lookup("db").DefValue {
+		cfg.DatabasePath = *dbPath
+	}
 
 	// Generate API key if not set
 	if cfg.InternalAPIKey == "" {
@@ -132,22 +174,6 @@ func loadFromEnv(cfg *Config) {
 	if v := os.Getenv("FIDEX_DB_PATH"); v != "" {
 		cfg.DatabasePath = v
 	}
-}
-
-// loadFromFlags loads configuration from command-line flags
-func loadFromFlags(cfg *Config) {
-	flag.StringVar(&cfg.NodeID, "node-id", cfg.NodeID, "Node ID")
-	flag.StringVar(&cfg.OrganizationName, "org-name", cfg.OrganizationName, "Organization name")
-	flag.StringVar(&cfg.PublicDomain, "domain", cfg.PublicDomain, "Public domain")
-	flag.IntVar(&cfg.InternalAPIPort, "internal-port", cfg.InternalAPIPort, "Internal API port")
-	flag.IntVar(&cfg.PublicAPIPort, "public-port", cfg.PublicAPIPort, "Public API port")
-	flag.StringVar(&cfg.InternalAPIKey, "api-key", cfg.InternalAPIKey, "Internal API key")
-	flag.BoolVar(&cfg.EnableIPAllowlist, "enable-ip-allowlist", cfg.EnableIPAllowlist, "Enable IP allowlist")
-	flag.StringVar(&cfg.PrivateKeyPath, "private-key", cfg.PrivateKeyPath, "Private key path")
-	flag.StringVar(&cfg.PublicKeyPath, "public-key", cfg.PublicKeyPath, "Public key path")
-	flag.StringVar(&cfg.DatabasePath, "db", cfg.DatabasePath, "Database path")
-
-	flag.Parse()
 }
 
 // generateAPIKey generates a cryptographically secure random API key
