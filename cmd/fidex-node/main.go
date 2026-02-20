@@ -14,9 +14,8 @@ import (
 	"fidex-node/internal/auth"
 	"fidex-node/internal/config"
 	"fidex-node/internal/constants"
+	"fidex-node/internal/container"
 	"fidex-node/internal/crypto"
-	"fidex-node/internal/db"
-	"fidex-node/internal/queue"
 	"fidex-node/internal/watcher"
 )
 
@@ -38,20 +37,7 @@ func main() {
 	api.NodeConfig = cfg // Set config for API handlers
 	log.Printf("✓ Configuration loaded (Internal Port: %d, Public Port: %d)", cfg.InternalAPIPort, cfg.PublicAPIPort)
 
-	// 2. Initialize SQLite Database
-	log.Println("Initializing database...")
-	if err := db.InitDB(cfg.DatabasePath); err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
-	}
-	log.Println("✓ Database initialized successfully")
-
-	// 3. Initialize default admin user
-	log.Println("Checking for default user...")
-	if err := api.InitializeDefaultUser(); err != nil {
-		log.Fatalf("Failed to initialize default user: %v", err)
-	}
-
-	// 4. Generate node keys if they don't exist
+	// 2. Generate node keys if they don't exist (before container initialization)
 	if _, err := os.Stat(cfg.PrivateKeyPath); os.IsNotExist(err) {
 		log.Println("No private key found, generating RSA key pair...")
 		privateKeyPEM, publicKeyPEM, err := crypto.GenerateKeyPair()
@@ -92,6 +78,20 @@ func main() {
 	log.Println("  NEVER log or expose this key in production!")
 	log.Println("========================================")
 
+	// 3. Initialize Service Container (handles DB, repos, crypto, workers)
+	log.Println("Initializing service container...")
+	appContainer, err := container.NewContainer(cfg)
+	if err != nil {
+		log.Fatalf("Failed to initialize container: %v", err)
+	}
+	log.Println("✓ Service container initialized")
+
+	// 4. Initialize default admin user
+	log.Println("Checking for default user...")
+	if err := api.InitializeDefaultUser(); err != nil {
+		log.Fatalf("Failed to initialize default user: %v", err)
+	}
+
 	// 5. Initialize File Watcher
 	log.Println("Starting file watcher...")
 	fw, err := watcher.NewFileWatcher()
@@ -103,18 +103,7 @@ func main() {
 	}
 	log.Println("✓ File watcher started")
 
-	// 4. Initialize WebSocket Hub
-	log.Println("Initializing WebSocket hub...")
-	api.InitializeWebSocketHub()
-	log.Println("✓ WebSocket hub initialized")
-
-	// 4.2. Initialize Message Queue Worker
-	log.Println("Starting message queue worker...")
-	queueWorker := queue.NewWorker()
-	queueWorker.Start()
-	log.Println("✓ Message queue worker started")
-
-	// 4.5. Start session cleanup goroutine with error handling
+	// 6. Start session cleanup goroutine with error handling
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
@@ -127,14 +116,14 @@ func main() {
 		}
 	}()
 
-	// 6. Parse allowed IPs
+	// 8. Parse allowed IPs
 	allowedIPs, err := api.ParseAllowedIPs(cfg.AllowedIPsString())
 	if err != nil {
 		log.Fatalf("Failed to parse allowed IPs: %v", err)
 	}
 	log.Printf("✓ IP Allowlist: %v (Enabled: %v)", cfg.AllowedIPAddresses, cfg.EnableIPAllowlist)
 
-	// 7. Setup HTTP Routers
+	// 9. Setup HTTP Routers
 	internalRouter := api.SetupInternalRouter(allowedIPs, cfg.InternalAPIKey, cfg.EnableIPAllowlist)
 	publicRouter := api.SetupPublicRouter()
 
@@ -147,7 +136,7 @@ func main() {
 	// Mount settings routes on internal router
 	internalRouter.Mount(constants.APISettings, api.SetupSettingsRouter())
 
-	// 8. Create HTTP Servers
+	// 10. Create HTTP Servers
 	internalServer := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.InternalAPIPort),
 		Handler:      internalRouter,
@@ -164,7 +153,7 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// 7. Start HTTP Servers in goroutines
+	// 11. Start HTTP Servers in goroutines
 	go func() {
 		log.Printf("Starting Internal API Server on %s", internalServer.Addr)
 		log.Printf("  - POST %s%s (Protected: IP Allowlist + API Key)", constants.APIV1, constants.RouteTransmitRel)
@@ -195,7 +184,7 @@ func main() {
 	log.Println("========================================")
 	log.Println("Press Ctrl+C to gracefully shutdown...")
 
-	// 8. Setup graceful shutdown
+	// 12. Setup graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
@@ -217,10 +206,13 @@ func main() {
 		log.Println("✓ File watcher stopped")
 	}
 
-	// Shutdown queue worker
-	log.Println("Stopping queue worker...")
-	queueWorker.Stop()
-	log.Println("✓ Queue worker stopped")
+	// Shutdown container (handles queue worker, database, etc.)
+	log.Println("Stopping service container...")
+	if err := appContainer.Close(); err != nil {
+		log.Printf("Error stopping container: %v", err)
+	} else {
+		log.Println("✓ Service container stopped")
+	}
 
 	// Shutdown internal server
 	log.Println("Stopping internal API server...")
@@ -236,14 +228,6 @@ func main() {
 		log.Printf("Error shutting down public server: %v", err)
 	} else {
 		log.Println("✓ Public API server stopped")
-	}
-
-	// Close database connection
-	log.Println("Closing database connection...")
-	if err := db.Close(); err != nil {
-		log.Printf("Error closing database: %v", err)
-	} else {
-		log.Println("✓ Database closed")
 	}
 
 	log.Println("========================================")

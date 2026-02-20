@@ -26,7 +26,7 @@ type ErrorInfo struct {
 // RespondJSON writes a JSON response with the given status code
 func RespondJSON(w http.ResponseWriter, statusCode int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteStatus(statusCode)
+	w.WriteHeader(statusCode)
 
 	response := JSONResponse{
 		Success: statusCode >= 200 && statusCode < 300,

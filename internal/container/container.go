@@ -140,8 +140,13 @@ func (c *Container) initDiscoveryService() error {
 
 // initWorkers initializes background workers
 func (c *Container) initWorkers() error {
-	// Initialize queue worker
-	c.QueueWorker = queue.NewWorker()
+	// Initialize queue worker with dependencies
+	c.QueueWorker = queue.NewWorker(
+		c.MessageRepo,
+		c.PartnerRepo,
+		c.CryptoService,
+	)
+	c.QueueWorker.Start()
 
 	// Initialize WebSocket hub
 	c.WebSocketHub = dashboard.NewHub()
