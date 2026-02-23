@@ -123,6 +123,7 @@ The routing header is cleartext JSON containing message metadata:
 - `urn:gln:{gln}` - GS1 Global Location Number
 - `urn:duns:{duns}` - D-U-N-S Number
 - `urn:lei:{lei}` - Legal Entity Identifier
+- `urn:tin:{tin}` - Tax Identification Number
 - `urn:custom:{identifier}` - Custom scheme
 
 **Extension Fields:**
