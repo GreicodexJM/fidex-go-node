@@ -1,22 +1,37 @@
 # FideX Security Best Practices Guide
 
-**Version:** 1.0  
-**Date:** February 20, 2026  
+**Version:** 1.1  
+**Date:** February 23, 2026  
 **Audience:** Security Engineers, DevOps, System Administrators
+
+---
+
+> **Document Status: INFORMATIVE**
+>
+> This document provides operational security best practices for FideX deployments.
+> It is NOT the authoritative specification. See `fidex-protocol-specification.md` for normative requirements.
+>
+> **Document Hierarchy:**
+> - `fidex-protocol-specification.md` — **NORMATIVE** authoritative specification
+> - `openapi.yaml` — **NORMATIVE** machine-readable contract
+> - **This document** — INFORMATIVE security operations guide
+> - `fidex-implementation-guide.md` — INFORMATIVE implementation examples
+> - `fidex-quickstart.md` — INFORMATIVE 5-minute quick start
 
 ---
 
 ## Table of Contents
 
 1. [Introduction](#1-introduction)
-2. [Key Management](#2-key-management)
-3. [TLS/HTTPS Configuration](#3-tlshttps-configuration)
-4. [Authentication and Authorization](#4-authentication-and-authorization)
-5. [Network Security](#5-network-security)
-6. [Logging and Monitoring](#6-logging-and-monitoring)
-7. [Incident Response](#7-incident-response)
-8. [Compliance and Auditing](#8-compliance-and-auditing)
-9. [Security Checklist](#9-security-checklist)
+2. [Threat Model and Controls Matrix](#threat-model-and-controls-matrix)
+3. [Key Management](#2-key-management)
+4. [TLS/HTTPS Configuration](#3-tlshttps-configuration)
+5. [Authentication and Authorization](#4-authentication-and-authorization)
+6. [Network Security](#5-network-security)
+7. [Logging and Monitoring](#6-logging-and-monitoring)
+8. [Incident Response](#7-incident-response)
+9. [Compliance and Auditing](#8-compliance-and-auditing)
+10. [Security Checklist](#9-security-checklist)
 
 ---
 
@@ -32,14 +47,47 @@ FideX security is built on:
 - **Zero Trust**: Never trust, always verify
 - **Separation of Duties**: Different keys for different purposes
 
-### 1.2 Threat Model
+### 1.2 Threat Model and Controls Matrix
 
-FideX protects against:
-- Man-in-the-Middle (MitM) attacks
-- Message tampering and replay attacks
-- Unauthorized access and impersonation
-- Key compromise and cryptographic attacks
-- Denial of Service (DoS) attacks
+The following matrix maps each threat to specific FideX controls and where they are implemented:
+
+| # | Threat | Attack Vector | FideX Control | Spec Reference | Layer |
+|---|--------|---------------|---------------|----------------|-------|
+| T1 | **Man-in-the-Middle** | Network interception | TLS 1.3 transport encryption | §2.1 | Transport |
+| T2 | **Eavesdropping** | Passive network sniffing | JWE payload encryption (RSA-OAEP + A256GCM) | §4.2 | Application |
+| T3 | **Message Tampering** | Modify message in transit | JWS signature (RS256) + hash verification in J-MDN | §4.1, §7.3.2 | Application |
+| T4 | **Replay Attack** | Resend captured message | Unique `message_id` cache + timestamp validation (±15 min) | §9.2 | Application |
+| T5 | **Sender Impersonation** | Forge sender identity | JWS signature verified against sender's JWKS public key | §4.1, §5.1 | Application |
+| T6 | **Receiver Impersonation** | Fake receiving node | JWE encrypted with receiver's JWKS public key + TLS certificate validation | §4.2, §3.3 | Transport+App |
+| T7 | **Repudiation (Sender)** | Deny sending message | JWS signature = non-repudiation of origin (private key possession proof) | §4.1 | Application |
+| T8 | **Repudiation (Receiver)** | Deny receiving message | Signed J-MDN = non-repudiation of receipt (receiver's JWS signature) | §7.3.3 | Application |
+| T9 | **Key Compromise** | Stolen private key | Key rotation via JWKS, emergency revocation, HSM storage | §5.3, §2.6 | Infrastructure |
+| T10 | **Partner Enumeration** | Discover trading partners | Single-use security tokens on discovery URLs, rate limiting | §6.2, §4.3 | Application |
+| T11 | **Denial of Service** | Flood endpoints | Rate limiting per partner, connection limits, DDoS protection | §5.2, §4.3 | Infrastructure |
+| T12 | **Payload Size Attack** | Oversized messages | 10 MB max message size, Content-Length validation | §8.1 | Application |
+| T13 | **Timing Attack** | Side-channel on crypto ops | Constant-time signature verification | §9.2 | Application |
+| T14 | **Padding Oracle** | JWE decryption probing | RSA-OAEP (secure padding), generic error responses | §4.2, §9.2 | Application |
+| T15 | **Algorithm Downgrade** | Force weak crypto | Prohibited algorithm list, `none` algorithm banned | §4.3 | Application |
+
+**Defense Layers:**
+
+```
+┌──────────────────────────────────────────────────────┐
+│  Layer 4: Infrastructure                              │
+│  DDoS protection, firewall, network segmentation     │
+├──────────────────────────────────────────────────────┤
+│  Layer 3: Transport                                   │
+│  TLS 1.3, certificate validation, HSTS               │
+├──────────────────────────────────────────────────────┤
+│  Layer 2: Application (FideX Protocol)                │
+│  JWS signatures, JWE encryption, J-MDN receipts,     │
+│  replay detection, timestamp validation               │
+├──────────────────────────────────────────────────────┤
+│  Layer 1: Key Management                              │
+│  HSM storage, key rotation, JWKS distribution,        │
+│  emergency revocation                                 │
+└──────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -1190,10 +1238,6 @@ else:
 - ISO 27001: https://www.iso.org/isoiec-27001-information-security.html
 - PCI DSS: https://www.pcisecuritystandards.org/
 - GDPR: https://gdpr.eu/
-
----
-
-*End of FideX Security Best Practices Guide*
 
 ---
 

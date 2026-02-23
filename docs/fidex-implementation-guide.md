@@ -1,8 +1,22 @@
 # FideX Implementation Guide
 
-**Version:** 1.0  
-**Date:** February 20, 2026  
+**Version:** 1.1  
+**Date:** February 23, 2026  
 **Audience:** Developers implementing FideX protocol clients or nodes
+
+---
+
+> **Document Status: INFORMATIVE**
+>
+> This document provides implementation examples and patterns for FideX integrators.
+> It is NOT the authoritative specification. See `fidex-protocol-specification.md` for normative requirements.
+>
+> **Document Hierarchy:**
+> - `fidex-protocol-specification.md` — **NORMATIVE** authoritative specification
+> - `openapi.yaml` — **NORMATIVE** machine-readable contract
+> - `fidex-security-guide.md` — INFORMATIVE security operations guide
+> - **This document** — INFORMATIVE implementation examples
+> - `fidex-quickstart.md` — INFORMATIVE 5-minute quick start
 
 ---
 
@@ -15,8 +29,9 @@
 5. [JWKS Management](#5-jwks-management)
 6. [Partner Discovery Implementation](#6-partner-discovery-implementation)
 7. [HTTP Client Configuration](#7-http-client-configuration)
-8. [Testing and Debugging](#8-testing-and-debugging)
-9. [Production Deployment](#9-production-deployment)
+8. [Error Handling Patterns](#8-error-handling-patterns)
+9. [Testing and Debugging](#9-testing-and-debugging)
+10. [Production Deployment](#10-production-deployment)
 
 ---
 
@@ -1172,9 +1187,305 @@ session = create_fidex_session()
 response = session.post(url, json=message, timeout=30)
 ```
 
-## 8. Testing and Debugging
+## 8. Error Handling Patterns
 
-### 8.1 Test Message Exchange
+Proper error handling is critical for FideX implementations. Errors occur at multiple layers and each requires a specific response pattern.
+
+### 8.1 Error Classification
+
+FideX errors fall into three categories with different response strategies:
+
+| Category | HTTP Response | J-MDN Sent? | Retry? | Examples |
+|----------|--------------|-------------|--------|----------|
+| **Structural** | 4xx immediately | No | Never | Missing routing_header, malformed JSON |
+| **Cryptographic** | 202 Accepted | Yes (FAILED) | Never | Wrong key, invalid signature, corrupted JWE |
+| **Transient** | 5xx / timeout | No | Yes (backoff) | Server overload, database down, network timeout |
+
+### 8.2 Receiver Error Handling Decision Tree
+
+```
+Message received
+  │
+  ├─ Can parse JSON? ──No──→ HTTP 400 + INVALID_ROUTING_HEADER (stop)
+  │
+  ├─ Has routing_header + encrypted_payload? ──No──→ HTTP 400 (stop)
+  │
+  ├─ Is sender_id a known partner? ──No──→ HTTP 401 + UNKNOWN_RECEIVER (stop)
+  │
+  ├─ Is message_id a duplicate? ──Yes──→ HTTP 202 (idempotent, no re-process)
+  │
+  ├─ Is timestamp within ±15 min? ──No──→ HTTP 400 + stale timestamp (stop)
+  │
+  ├─ HTTP 202 Accepted (queued for async processing)
+  │
+  ├─ Can decrypt JWE? ──No──→ J-MDN FAILED: DECRYPTION_FAILED
+  │
+  ├─ Can verify JWS? ──No──→ J-MDN FAILED: SIGNATURE_INVALID
+  │
+  ├─ Is document_type supported? ──No──→ J-MDN FAILED: UNKNOWN_DOCUMENT_TYPE
+  │
+  └─ Process OK ──→ J-MDN DELIVERED + hash_verification
+```
+
+### 8.3 Implementation: Go Error Handler
+
+```go
+// FideX error types with categorization
+type FideXError struct {
+    Code       string // Machine-readable error code
+    Message    string // Human-readable description
+    HTTPStatus int    // HTTP status code to return
+    Retryable  bool   // Whether sender should retry
+    SendJMDN   bool   // Whether to send J-MDN for this error
+}
+
+var (
+    ErrInvalidRoutingHeader = &FideXError{"INVALID_ROUTING_HEADER", "Missing or malformed routing header", 400, false, false}
+    ErrUnknownReceiver      = &FideXError{"UNKNOWN_RECEIVER", "Receiver ID not recognized", 401, false, false}
+    ErrUnknownSender        = &FideXError{"UNKNOWN_SENDER", "Sender not a registered partner", 401, false, false}
+    ErrDuplicateMessage     = &FideXError{"DUPLICATE_MESSAGE", "Message already processed", 202, false, false}
+    ErrStaleTimestamp       = &FideXError{"STALE_TIMESTAMP", "Timestamp outside ±15 minute window", 400, false, false}
+    ErrPayloadTooLarge      = &FideXError{"PAYLOAD_TOO_LARGE", "Message exceeds size limit", 413, false, false}
+    ErrRateLimited          = &FideXError{"RATE_LIMITED", "Rate limit exceeded", 429, true, false}
+    ErrDecryptionFailed     = &FideXError{"DECRYPTION_FAILED", "Cannot decrypt payload", 0, false, true}
+    ErrSignatureInvalid     = &FideXError{"SIGNATURE_INVALID", "Signature verification failed", 0, false, true}
+    ErrUnknownDocType       = &FideXError{"UNKNOWN_DOCUMENT_TYPE", "Document type not supported", 0, false, true}
+    ErrInternalError        = &FideXError{"INTERNAL_ERROR", "Internal processing error", 500, true, true}
+)
+
+func handleReceiveMessage(w http.ResponseWriter, r *http.Request) {
+    ctx := r.Context()
+
+    // Phase 1: Structural validation (synchronous, pre-202)
+    var envelope FideXEnvelope
+    if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
+        respondError(w, ErrInvalidRoutingHeader)
+        return
+    }
+
+    if err := validateRoutingHeader(envelope.RoutingHeader); err != nil {
+        respondError(w, ErrInvalidRoutingHeader)
+        return
+    }
+
+    if !isKnownPartner(ctx, envelope.RoutingHeader.SenderID) {
+        respondError(w, ErrUnknownSender)
+        return
+    }
+
+    if isDuplicate(ctx, envelope.RoutingHeader.MessageID) {
+        respondAccepted(w, envelope.RoutingHeader.MessageID) // Idempotent
+        return
+    }
+
+    if !isTimestampValid(envelope.RoutingHeader.Timestamp, 15*time.Minute) {
+        respondError(w, ErrStaleTimestamp)
+        return
+    }
+
+    // Phase 2: Accept and queue (return 202 immediately)
+    respondAccepted(w, envelope.RoutingHeader.MessageID)
+
+    // Phase 3: Async processing (in background goroutine)
+    go processMessageAsync(ctx, envelope)
+}
+
+func processMessageAsync(ctx context.Context, envelope FideXEnvelope) {
+    var jmdn JMDN
+    jmdn.OriginalMessageID = envelope.RoutingHeader.MessageID
+    jmdn.ReceiverID = envelope.RoutingHeader.ReceiverID
+    jmdn.Timestamp = time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+
+    // Attempt decrypt
+    payload, err := decryptJWE(envelope.EncryptedPayload, myPrivateKey)
+    if err != nil {
+        jmdn.Status = "FAILED"
+        jmdn.HashVerification = "sha256:" + strings.Repeat("0", 64)
+        jmdn.ErrorLog = &ErrorLog{Code: "DECRYPTION_FAILED", Message: err.Error()}
+        sendJMDNWithRetry(ctx, envelope.RoutingHeader.ReceiptWebhook, jmdn)
+        return
+    }
+
+    // Attempt verify signature
+    businessPayload, err := verifyJWS(payload, partnerPublicKey)
+    if err != nil {
+        jmdn.Status = "FAILED"
+        jmdn.HashVerification = "sha256:" + strings.Repeat("0", 64)
+        jmdn.ErrorLog = &ErrorLog{Code: "SIGNATURE_INVALID", Message: err.Error()}
+        sendJMDNWithRetry(ctx, envelope.RoutingHeader.ReceiptWebhook, jmdn)
+        return
+    }
+
+    // Success
+    jmdn.Status = "DELIVERED"
+    jmdn.HashVerification = computeSHA256(businessPayload)
+    jmdn.ErrorLog = nil
+    sendJMDNWithRetry(ctx, envelope.RoutingHeader.ReceiptWebhook, jmdn)
+
+    // Deliver to local ERP
+    deliverToERP(ctx, businessPayload)
+}
+```
+
+### 8.4 Implementation: JavaScript Error Handler
+
+```javascript
+// Typed FideX errors
+class FideXError extends Error {
+  constructor(code, message, httpStatus, retryable, sendJMDN) {
+    super(message);
+    this.code = code;
+    this.httpStatus = httpStatus;
+    this.retryable = retryable;
+    this.sendJMDN = sendJMDN;
+  }
+}
+
+const ERRORS = {
+  INVALID_ROUTING_HEADER: new FideXError('INVALID_ROUTING_HEADER', 'Missing or malformed routing header', 400, false, false),
+  UNKNOWN_SENDER:         new FideXError('UNKNOWN_SENDER', 'Sender not registered', 401, false, false),
+  STALE_TIMESTAMP:        new FideXError('STALE_TIMESTAMP', 'Timestamp outside window', 400, false, false),
+  DECRYPTION_FAILED:      new FideXError('DECRYPTION_FAILED', 'Cannot decrypt payload', null, false, true),
+  SIGNATURE_INVALID:      new FideXError('SIGNATURE_INVALID', 'Signature verification failed', null, false, true),
+};
+
+async function receiveHandler(req, res) {
+  const envelope = req.body;
+
+  // Phase 1: Structural validation
+  try {
+    validateRoutingHeader(envelope.routing_header);
+    await validatePartner(envelope.routing_header.sender_id);
+    validateTimestamp(envelope.routing_header.timestamp);
+    checkReplayAttack(envelope.routing_header.message_id);
+  } catch (err) {
+    if (err instanceof FideXError) {
+      return res.status(err.httpStatus).json({
+        error: { code: err.code, message: err.message, timestamp: new Date().toISOString() }
+      });
+    }
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Unexpected error' } });
+  }
+
+  // Phase 2: Accept
+  res.status(202).json({
+    status: 'accepted',
+    message_id: envelope.routing_header.message_id,
+    timestamp: new Date().toISOString()
+  });
+
+  // Phase 3: Async processing
+  processAsync(envelope).catch(err => {
+    console.error('Async processing failed:', err);
+  });
+}
+```
+
+### 8.5 J-MDN Delivery with Retry
+
+```go
+// Retry schedule per spec §7.3.6
+var jmdnRetryDelays = []time.Duration{
+    0,              // Attempt 1: immediate
+    1 * time.Minute,  // Attempt 2
+    5 * time.Minute,  // Attempt 3
+    15 * time.Minute, // Attempt 4
+    1 * time.Hour,    // Attempt 5
+}
+
+func sendJMDNWithRetry(ctx context.Context, webhookURL string, jmdn JMDN) {
+    // Sign J-MDN before sending
+    jmdn.Signature = signJMDN(jmdn, myPrivateKey)
+
+    for attempt, delay := range jmdnRetryDelays {
+        if delay > 0 {
+            select {
+            case <-time.After(delay):
+            case <-ctx.Done():
+                log.Printf("J-MDN delivery cancelled for %s", jmdn.OriginalMessageID)
+                return
+            }
+        }
+
+        err := postJMDN(ctx, webhookURL, jmdn)
+        if err == nil {
+            log.Printf("J-MDN delivered for %s (attempt %d)", jmdn.OriginalMessageID, attempt+1)
+            return
+        }
+
+        log.Printf("J-MDN delivery failed for %s (attempt %d/%d): %v",
+            jmdn.OriginalMessageID, attempt+1, len(jmdnRetryDelays), err)
+    }
+
+    // All attempts exhausted — store for manual retrieval, NEVER discard
+    storeUndeliveredJMDN(jmdn)
+    log.Printf("J-MDN stored for manual retrieval: %s", jmdn.OriginalMessageID)
+}
+```
+
+### 8.6 Sender-Side Error Handling
+
+```go
+// Message transmission with retry per spec §7.4
+var sendRetryDelays = []time.Duration{
+    0, 1 * time.Minute, 5 * time.Minute,
+    15 * time.Minute, 30 * time.Minute, 1 * time.Hour,
+}
+
+func transmitMessage(ctx context.Context, msg FideXEnvelope, partnerEndpoint string) error {
+    for attempt, delay := range sendRetryDelays {
+        if delay > 0 {
+            time.Sleep(delay)
+        }
+
+        statusCode, err := postMessage(ctx, partnerEndpoint, msg)
+        if err != nil {
+            log.Printf("Transmission error (attempt %d): %v", attempt+1, err)
+            continue // Network error → retry
+        }
+
+        switch {
+        case statusCode == 202:
+            updateMessageState(msg.RoutingHeader.MessageID, "SENT")
+            return nil // Success — wait for J-MDN
+
+        case statusCode == 429 || statusCode >= 500:
+            log.Printf("Retryable HTTP %d (attempt %d)", statusCode, attempt+1)
+            continue // Transient error → retry
+
+        case statusCode >= 400 && statusCode < 500:
+            updateMessageState(msg.RoutingHeader.MessageID, "FAILED")
+            return fmt.Errorf("permanent rejection: HTTP %d", statusCode) // Do NOT retry
+        }
+    }
+
+    updateMessageState(msg.RoutingHeader.MessageID, "FAILED")
+    return fmt.Errorf("max retries exceeded for message %s", msg.RoutingHeader.MessageID)
+}
+```
+
+### 8.7 Security: Never Leak Sensitive Data in Errors
+
+```go
+// WRONG — leaks internal state
+respondError(w, fmt.Sprintf("Key %s not found in HSM slot 3", kid))
+
+// CORRECT — generic message, internal details logged only
+log.Printf("Key lookup failed: kid=%s, hsm_slot=3, err=%v", kid, err)
+respondError(w, &FideXError{Code: "UNKNOWN_KEY_ID", Message: "Key ID not found in JWKS"})
+```
+
+**Rules:**
+- NEVER include private key material, file paths, or stack traces in HTTP responses
+- NEVER include partner identifiers from other partners
+- Log detailed diagnostics server-side only
+- J-MDN `error_log.details` MUST NOT contain sensitive data (per spec §7.3.4)
+
+---
+
+## 9. Testing and Debugging
+
+### 9.1 Test Message Exchange
 
 **JavaScript Test**
 ```javascript
@@ -1216,7 +1527,7 @@ describe('FideX Message Exchange', () => {
 });
 ```
 
-### 8.2 Debugging Tips
+### 9.2 Debugging Tips
 
 **Enable Verbose Logging:**
 ```javascript
@@ -1243,9 +1554,9 @@ curl -v https://your-node.example.com/.well-known/jwks.json
 - **"Unknown key ID"**: JWKS not cached or key rotation issue
 - **TLS errors**: Certificate validation or cipher suite mismatch
 
-## 9. Production Deployment
+## 10. Production Deployment
 
-### 9.1 Security Checklist
+### 10.1 Security Checklist
 
 - [ ] Private keys stored encrypted (AWS Secrets Manager, HashiCorp Vault)
 - [ ] TLS 1.3 enabled with strong cipher suites
@@ -1258,7 +1569,7 @@ curl -v https://your-node.example.com/.well-known/jwks.json
 - [ ] Backup key pairs generated
 - [ ] Key rotation schedule defined (annual)
 
-### 9.2 Performance Optimization
+### 10.2 Performance Optimization
 
 **Connection Pooling:**
 ```javascript
@@ -1298,7 +1609,7 @@ func (c *JWKSCache) Get(partnerID string) (*jose.JSONWebKeySet, bool) {
 }
 ```
 
-### 9.3 Monitoring Metrics
+### 10.3 Monitoring Metrics
 
 Track these metrics:
 - Messages sent/received per minute
@@ -1329,7 +1640,7 @@ var (
 )
 ```
 
-### 9.4 Docker Deployment
+### 10.4 Docker Deployment
 
 **Dockerfile:**
 ```dockerfile
@@ -1366,7 +1677,7 @@ services:
     restart: unless-stopped
 ```
 
-### 9.5 Health Checks
+### 10.5 Health Checks
 
 **Endpoint:**
 ```javascript
@@ -1414,10 +1725,6 @@ app.get('/health', (req, res) => {
 - JOSE RFCs: RFC 7515 (JWS), RFC 7516 (JWE), RFC 7517 (JWK)
 - Test JWT: https://jwt.io
 - TLS Config: https://ssl-config.mozilla.org
-
----
-
-*End of FideX Implementation Guide*
 
 ---
 

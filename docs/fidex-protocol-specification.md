@@ -155,7 +155,47 @@ The routing header is cleartext JSON containing message metadata:
 **Extension Fields:**
 Implementations MAY include additional fields prefixed with `x-`. Standard processors MUST ignore unknown extension fields.
 
-### 3.3 Encrypted Payload
+### 3.3 Document Type Registry
+
+The `document_type` field uses a two-tier naming system:
+
+**Tier 1 — Standard Types (managed by FideX Working Group):**
+
+| Type Identifier | Standard | Description |
+|-----------------|----------|-------------|
+| `GS1_ORDER_JSON` | GS1 | Purchase order (JSON binding) |
+| `GS1_INVOICE_JSON` | GS1 | Commercial invoice (JSON binding) |
+| `GS1_DESADV_JSON` | GS1 | Despatch advice (JSON binding) |
+| `GS1_RECADV_JSON` | GS1 | Receiving advice (JSON binding) |
+| `GS1_CATALOG_JSON` | GS1 | Product catalog (JSON binding) |
+| `X12_850` | ANSI X12 | Purchase order |
+| `X12_810` | ANSI X12 | Invoice |
+| `X12_856` | ANSI X12 | Advance ship notice |
+| `EDIFACT_ORDERS` | UN/EDIFACT | Purchase order message |
+| `EDIFACT_INVOIC` | UN/EDIFACT | Invoice message |
+| `EDIFACT_DESADV` | UN/EDIFACT | Despatch advice message |
+| `UBL_ORDER_21` | OASIS UBL 2.1 | Order document |
+| `UBL_INVOICE_21` | OASIS UBL 2.1 | Invoice document |
+
+Standard types use uppercase alphanumeric characters and underscores. Pattern: `^[A-Z0-9_]+$`.
+
+**Tier 2 — Custom Types (organization-defined):**
+
+Custom types MUST use reverse domain notation to avoid collisions:
+
+| Pattern | Example | Description |
+|---------|---------|-------------|
+| `{TLD}_{ORG}_{DOCTYPE}_{VERSION}` | `COM_ACME_WAREHOUSE_RECEIPT_V2` | Custom warehouse receipt |
+| `{TLD}_{ORG}_{DOCTYPE}` | `ORG_MYCOMPANY_INTERNAL_MEMO` | Internal memo type |
+
+Custom types MUST NOT start with a standard prefix (`GS1_`, `X12_`, `EDIFACT_`, `UBL_`).
+
+**Receiver Behavior:**
+- Receivers MUST accept messages with any syntactically valid `document_type`
+- Receivers SHOULD return J-MDN with `UNKNOWN_DOCUMENT_TYPE` error for types they cannot process
+- Receivers MUST NOT reject messages at the HTTP level solely because of unknown `document_type` (use J-MDN instead)
+
+### 3.4 Encrypted Payload
 
 The `encrypted_payload` field contains a JWE (JSON Web Encryption) token as defined in RFC 7516. The JWE encrypts a JWS (JSON Web Signature) token as defined in RFC 7515, creating a nested structure:
 
@@ -289,11 +329,15 @@ Nodes MUST expose an AS5 configuration document at an HTTPS URL. The URL:
 ```json
 {
   "fidex_version": "1.0",
+  "supported_versions": ["1.0"],
+  "conformance_profile": "core",
   "node_id": "urn:gln:1234567890123",
   "organization_name": "Example Corp",
   "public_domain": "fidex.example.com",
+  "supported_document_types": ["GS1_ORDER_JSON", "GS1_INVOICE_JSON"],
   "endpoints": {
     "receive_message": "https://fidex.example.com/api/v1/receive",
+    "receive_receipt": "https://fidex.example.com/api/v1/receipt",
     "register": "https://fidex.example.com/api/v1/register",
     "jwks": "https://fidex.example.com/.well-known/jwks.json"
   },
@@ -305,6 +349,33 @@ Nodes MUST expose an AS5 configuration document at an HTTPS URL. The URL:
   }
 }
 ```
+
+**AS5 Configuration Fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `fidex_version` | YES | Current active protocol version |
+| `supported_versions` | YES | Array of all protocol versions this node supports (e.g., `["1.0", "1.1"]`) |
+| `conformance_profile` | NO | Conformance level: `"core"`, `"enhanced"`, or `"edge"` (see Appendix C) |
+| `node_id` | YES | URN identifier for this node |
+| `organization_name` | YES | Human-readable organization name |
+| `public_domain` | YES | Public-facing domain name |
+| `supported_document_types` | NO | Array of `document_type` identifiers this node can process (see Section 3.3) |
+| `endpoints` | YES | Service endpoint URLs (see below) |
+| `security` | YES | Cryptographic algorithm declarations |
+
+### 6.2.1 Version Negotiation
+
+When two nodes with different `supported_versions` attempt to communicate:
+
+1. **Sender** checks receiver's `supported_versions` from AS5 config
+2. **Sender** selects the highest version present in BOTH `supported_versions` arrays
+3. **Sender** sets `fidex_version` in routing header to the negotiated version
+4. **Receiver** MUST reject messages with `fidex_version` not in its `supported_versions`
+
+**Example:** Sender supports `["1.0", "1.1"]`, receiver supports `["1.0"]` → negotiated version is `"1.0"`.
+
+If no common version exists, the sender MUST NOT transmit and SHOULD report an error to the local ERP.
 
 ### 6.3 Discovery Handshake
 
@@ -351,6 +422,32 @@ Responders MUST:
 - Validate signature before trusting payload
 - Reject expired timestamps
 - Reject invalid or reused tokens
+
+### 6.5 Partner De-Registration
+
+Partners MAY terminate their trust relationship through a de-registration process.
+
+**De-registration is a local operation.** There is no protocol-level de-registration handshake. Each party independently manages its own partner database.
+
+**De-registration Process:**
+
+1. **Initiating Party** sets partner status to `INACTIVE` in its local database
+2. **Initiating Party** SHOULD notify the other party via out-of-band channel (email, phone, portal)
+3. **Initiating Party** MUST continue to accept J-MDNs for messages already in flight
+4. **Initiating Party** MUST reject new inbound messages from de-registered partner with HTTP 401
+5. **Initiating Party** SHOULD retain partner records for audit purposes (7 years RECOMMENDED)
+
+**Partner States:**
+
+| State | Description |
+|-------|-------------|
+| `ACTIVE` | Normal operation — messages accepted |
+| `SUSPENDED` | Temporarily paused — messages rejected with HTTP 503 |
+| `INACTIVE` | De-registered — messages rejected with HTTP 401 |
+
+**Re-Registration:** A de-registered partner MAY re-register using the standard discovery handshake (Section 6.3). The responder MAY require a new security token.
+
+**Grace Period:** After de-registration, implementations SHOULD maintain a 24-hour grace period during which in-flight J-MDNs are still accepted.
 
 ---
 
@@ -936,6 +1033,203 @@ To verify a FideX implementation:
 
 ---
 
+## Appendix E: JSON Schema Definitions
+
+This appendix provides JSON Schema (draft-07) definitions for machine-validation of FideX structures.
+
+### E.1 Routing Header Schema
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://fidex-protocol.org/schemas/v1/routing-header.json",
+  "title": "FideX Routing Header",
+  "type": "object",
+  "required": ["fidex_version", "message_id", "sender_id", "receiver_id", "document_type", "timestamp", "receipt_webhook"],
+  "additionalProperties": true,
+  "properties": {
+    "fidex_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+$",
+      "description": "Protocol version (major.minor)"
+    },
+    "message_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Globally unique message identifier"
+    },
+    "sender_id": {
+      "type": "string",
+      "pattern": "^urn:(gln|duns|lei|tin|custom):.+$",
+      "description": "URN of sending organization"
+    },
+    "receiver_id": {
+      "type": "string",
+      "pattern": "^urn:(gln|duns|lei|tin|custom):.+$",
+      "description": "URN of receiving organization"
+    },
+    "document_type": {
+      "type": "string",
+      "pattern": "^[A-Z0-9_]+$",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Business document type identifier"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp (YYYY-MM-DDTHH:mm:ss.SSSZ)"
+    },
+    "receipt_webhook": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://",
+      "description": "HTTPS URL for J-MDN delivery"
+    },
+    "payload_digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "description": "SHA-256 digest of encrypted_payload"
+    }
+  },
+  "patternProperties": {
+    "^x-": { "description": "Extension fields" }
+  }
+}
+```
+
+### E.2 FideX Envelope Schema
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://fidex-protocol.org/schemas/v1/envelope.json",
+  "title": "FideX Message Envelope",
+  "type": "object",
+  "required": ["routing_header", "encrypted_payload"],
+  "additionalProperties": false,
+  "properties": {
+    "routing_header": { "$ref": "routing-header.json" },
+    "encrypted_payload": {
+      "type": "string",
+      "minLength": 1,
+      "description": "JWE compact serialization"
+    }
+  }
+}
+```
+
+### E.3 J-MDN Schema
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://fidex-protocol.org/schemas/v1/jmdn.json",
+  "title": "FideX J-MDN (JSON Message Disposition Notification)",
+  "type": "object",
+  "required": ["original_message_id", "status", "receiver_id", "hash_verification", "timestamp", "error_log", "signature"],
+  "additionalProperties": false,
+  "properties": {
+    "original_message_id": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "enum": ["DELIVERED", "FAILED"] },
+    "receiver_id": { "type": "string", "pattern": "^urn:(gln|duns|lei|tin|custom):.+$" },
+    "hash_verification": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "error_log": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/definitions/error_log_object" }
+      ]
+    },
+    "signature": { "type": "string", "minLength": 1, "description": "JWS compact serialization" }
+  },
+  "if": { "properties": { "status": { "const": "DELIVERED" } } },
+  "then": { "properties": { "error_log": { "type": "null" } } },
+  "else": { "properties": { "error_log": { "$ref": "#/definitions/error_log_object" } } },
+  "definitions": {
+    "error_log_object": {
+      "type": "object",
+      "required": ["error_code", "error_message"],
+      "properties": {
+        "error_code": {
+          "type": "string",
+          "enum": ["DECRYPTION_FAILED", "SIGNATURE_INVALID", "UNKNOWN_DOCUMENT_TYPE", "PAYLOAD_TOO_LARGE", "INTERNAL_ERROR"]
+        },
+        "error_message": { "type": "string" },
+        "details": { "type": "string" }
+      }
+    }
+  }
+}
+```
+
+### E.4 Error Response Schema
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://fidex-protocol.org/schemas/v1/error.json",
+  "title": "FideX Error Response",
+  "type": "object",
+  "required": ["error"],
+  "properties": {
+    "error": {
+      "type": "object",
+      "required": ["code", "message", "timestamp"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}
+```
+
+### E.5 AS5 Configuration Schema
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://fidex-protocol.org/schemas/v1/as5-config.json",
+  "title": "FideX AS5 Configuration",
+  "type": "object",
+  "required": ["fidex_version", "supported_versions", "node_id", "organization_name", "public_domain", "endpoints", "security"],
+  "properties": {
+    "fidex_version": { "type": "string", "pattern": "^\\d+\\.\\d+$" },
+    "supported_versions": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+    "conformance_profile": { "type": "string", "enum": ["core", "enhanced", "edge"] },
+    "node_id": { "type": "string", "pattern": "^urn:" },
+    "organization_name": { "type": "string", "minLength": 1 },
+    "public_domain": { "type": "string", "format": "hostname" },
+    "supported_document_types": { "type": "array", "items": { "type": "string", "pattern": "^[A-Z0-9_]+$" } },
+    "endpoints": {
+      "type": "object",
+      "required": ["receive_message", "register", "jwks"],
+      "properties": {
+        "receive_message": { "type": "string", "format": "uri" },
+        "receive_receipt": { "type": "string", "format": "uri" },
+        "register": { "type": "string", "format": "uri" },
+        "jwks": { "type": "string", "format": "uri" }
+      }
+    },
+    "security": {
+      "type": "object",
+      "required": ["signature_algorithm", "encryption_algorithm", "content_encryption", "minimum_key_size"],
+      "properties": {
+        "signature_algorithm": { "type": "string" },
+        "encryption_algorithm": { "type": "string" },
+        "content_encryption": { "type": "string" },
+        "minimum_key_size": { "type": "integer", "minimum": 2048 }
+      }
+    }
+  }
+}
+```
+
+---
+
 ## Document Status
 
 **Version:** 1.0 Draft  
@@ -944,7 +1238,9 @@ To verify a FideX implementation:
 **License:** Creative Commons Attribution 4.0 International (CC BY 4.0)
 
 **Change Log:**
-- 2026-02-23: Critical improvements — document hierarchy, complete J-MDN spec, conformance profiles, test vectors, receipt_webhook made REQUIRED, timestamp format standardized
+- 2026-02-23 (Phase 3): JSON Schema definitions (Appendix E) for routing header, envelope, J-MDN, error response, and AS5 config. Security guide restructured with 15-threat control matrix. Implementation guide expanded with comprehensive error handling patterns (Section 8)
+- 2026-02-23 (Phase 2): Document type registry (Section 3.3), payload_digest field, version negotiation (Section 6.2.1), partner de-registration (Section 6.5), AS5 config expanded with supported_versions/conformance_profile/supported_document_types, quick start guide
+- 2026-02-23 (Phase 1): Document hierarchy preamble, complete J-MDN spec (7 sub-sections), conformance profiles, interoperability test vectors, receipt_webhook made REQUIRED, timestamp format standardized
 - 2026-02-20: Initial specification release
 
 **Feedback:**
