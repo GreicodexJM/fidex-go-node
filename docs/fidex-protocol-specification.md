@@ -2,8 +2,33 @@
 
 **Version:** 1.0 (Draft)  
 **Status:** Proposed Standard  
-**Date:** February 20, 2026  
+**Date:** February 23, 2026  
 **Authors:** FideX Protocol Working Group
+
+---
+
+> **Document Status: NORMATIVE**
+>
+> This document is the **authoritative, normative specification** of the FideX Protocol (AS5).
+> All conforming implementations MUST satisfy the requirements stated herein.
+>
+> **Related Documents:**
+> - `fidex-annotated-specification.md` — INFORMATIVE companion with rationale, examples, and code samples
+> - `fidex-security-guide.md` — INFORMATIVE operational security best practices
+> - `fidex-implementation-guide.md` — INFORMATIVE multi-language implementation examples
+> - `openapi.yaml` — NORMATIVE OpenAPI 3.0 machine-readable contract (MUST match this specification)
+>
+> In case of conflict between documents, THIS specification takes precedence.
+
+> **Formal Designation: AS5 (Application Statement 5)**
+>
+> FideX adopts the "AS" naming lineage from established B2B interchange standards:
+> - **AS2** (RFC 4130) — MIME/S/MIME over HTTP (2005)
+> - **AS4** (OASIS ebMS 3.0) — SOAP/WS-Security (2013)
+> - **AS5** (FideX) — REST/JOSE over HTTPS (2026)
+>
+> The designation signals evolutionary continuity while marking a generational leap
+> to modern web-native architecture.
 
 ---
 
@@ -111,13 +136,14 @@ The routing header is cleartext JSON containing message metadata:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `fidex_version` | string | YES | Protocol version (e.g., "1.0") |
-| `message_id` | string | YES | Globally unique identifier (UUID v4) |
+| `fidex_version` | string | YES | Protocol version (semantic versioning "major.minor", e.g., "1.0") |
+| `message_id` | string | YES | Globally unique identifier (UUID v4, "fdx-" prefix RECOMMENDED) |
 | `sender_id` | string | YES | URN of sending organization |
 | `receiver_id` | string | YES | URN of receiving organization |
-| `document_type` | string | YES | Business document type identifier |
-| `timestamp` | string | YES | ISO 8601 UTC timestamp |
-| `receipt_webhook` | string | NO | HTTPS URL for J-MDN delivery |
+| `document_type` | string | YES | Business document type identifier (uppercase alphanumeric with underscores) |
+| `timestamp` | string | YES | ISO 8601 UTC timestamp. Format: `YYYY-MM-DDTHH:mm:ss.SSSZ` (millisecond precision, always UTC `Z`) |
+| `receipt_webhook` | string | YES | HTTPS URL where J-MDN receipt MUST be delivered. HTTP (non-TLS) is NOT allowed. REQUIRED for non-repudiation chain integrity. |
+| `payload_digest` | string | NO | SHA-256 digest of the encrypted_payload string. Format: `"sha256:{hex}"`. Enables routing-layer integrity checks WITHOUT decryption. |
 
 **Identifier Format (sender_id / receiver_id):**
 - `urn:gln:{gln}` - GS1 Global Location Number
@@ -351,34 +377,147 @@ HTTP 202 indicates structural acceptance only, NOT successful decryption or proc
 
 ### 7.3 Asynchronous Receipt (J-MDN)
 
-After successfully decrypting and processing a message, the receiver MUST send a J-MDN to the sender's `receipt_webhook`.
+The J-MDN (JSON Message Disposition Notification) is the **most legally important artifact** in the FideX protocol. It provides cryptographic proof that a specific message was received, decrypted, and either accepted or rejected by the trading partner.
 
-**J-MDN Structure:**
+After processing a message (whether successfully or not), the receiver MUST send a J-MDN to the sender's `receipt_webhook`.
+
+#### 7.3.1 J-MDN Payload Schema
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `original_message_id` | string | YES | The `message_id` from the original FideX envelope's `routing_header`. |
+| `status` | string | YES | `"DELIVERED"` or `"FAILED"`. |
+| `receiver_id` | string | YES | URN of the receiver generating this J-MDN. MUST match `receiver_id` in original `routing_header`. |
+| `hash_verification` | string | YES | SHA-256 hash of the raw business payload bytes BEFORE JWS signing. Format: `"sha256:{hex_encoded_hash}"`. |
+| `timestamp` | string | YES | ISO 8601 UTC timestamp when J-MDN was created. Format: `YYYY-MM-DDTHH:mm:ss.SSSZ`. |
+| `error_log` | object/null | YES | MUST be `null` when `status` is `"DELIVERED"`. MUST be an error object when `status` is `"FAILED"`. |
+| `signature` | string | YES | JWS compact serialization of all other J-MDN fields (see 7.3.3). |
+
+**Positive J-MDN Example (DELIVERED):**
 ```json
 {
-  "original_message_id": "fdx-...",
+  "original_message_id": "fdx-a1b2c3d4-e5f6-g7h8",
   "status": "DELIVERED",
-  "hash_verification": "sha256-...",
-  "timestamp": "2026-02-20T18:00:02Z",
-  "error_log": null
+  "receiver_id": "urn:gln:9876543210987",
+  "hash_verification": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+  "timestamp": "2026-02-20T18:30:02.000Z",
+  "error_log": null,
+  "signature": "eyJhbGciOiJSUzI1NiIsImtpZCI6InJlY2VpdmVyLXNpZ24tMjAyNi0wMi1wcmltYXJ5In0..."
 }
 ```
 
-**J-MDN Requirements:**
-- MUST be signed with receiver's private key (JWS)
-- MUST include hash of original business payload
-- SHOULD be sent within 5 minutes of receipt
-- Sender MUST acknowledge J-MDN with HTTP 200
-
-**Negative Acknowledgment:**
-If processing fails, status MUST be "FAILED" and `error_log` MUST contain:
+**Negative J-MDN Example (FAILED):**
 ```json
 {
-  "error_code": "DECRYPTION_FAILED",
-  "error_message": "Unable to decrypt payload",
-  "details": "..."
+  "original_message_id": "fdx-a1b2c3d4-e5f6-g7h8",
+  "status": "FAILED",
+  "receiver_id": "urn:gln:9876543210987",
+  "hash_verification": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "timestamp": "2026-02-20T18:30:02.000Z",
+  "error_log": {
+    "error_code": "DECRYPTION_FAILED",
+    "error_message": "Unable to decrypt payload with provided key",
+    "details": "Key ID mismatch"
+  },
+  "signature": "eyJhbGciOiJSUzI1NiIsImtpZCI6InJlY2VpdmVyLXNpZ24tMjAyNi0wMi1wcmltYXJ5In0..."
 }
 ```
+
+#### 7.3.2 Hash Verification Definition
+
+The `hash_verification` field provides proof that the receiver decrypted the exact payload the sender signed.
+
+**Definition:** `hash_verification = "sha256:" + hex(SHA-256(raw_business_payload_bytes))`
+
+Where `raw_business_payload_bytes` is the UTF-8 encoded byte representation of the business JSON payload **before** JWS signing (i.e., the original cleartext payload that was the input to the JWS sign operation).
+
+When `status` is `"FAILED"` and the receiver could NOT decrypt the payload, the `hash_verification` field MUST be set to `"sha256:0000000000000000000000000000000000000000000000000000000000000000"` (64 zero hex digits).
+
+#### 7.3.3 J-MDN Signature Requirements
+
+The `signature` field MUST contain a JWS compact serialization that covers all other J-MDN fields.
+
+**JWS Protected Header:**
+```json
+{
+  "alg": "RS256",
+  "kid": "{receiver-signing-key-id}"
+}
+```
+
+**JWS Payload:** The canonical JSON serialization of the J-MDN fields (excluding the `signature` field itself). Fields MUST be serialized in the order defined in Section 7.3.1.
+
+**Signing process:**
+1. Construct a JSON object with all J-MDN fields EXCEPT `signature`
+2. Serialize to canonical UTF-8 JSON (no extra whitespace, keys in schema order)
+3. Sign using RS256 with receiver's private signing key
+4. Set `signature` to the resulting JWS compact serialization
+
+**Verification process (sender side):**
+1. Extract `signature` from J-MDN
+2. Parse JWS, extract `kid` from header
+3. Lookup receiver's public key from their JWKS using `kid`
+4. Verify JWS signature
+5. Compare JWS payload with remaining J-MDN fields for consistency
+
+#### 7.3.4 J-MDN Error Codes
+
+When `status` is `"FAILED"`, the `error_log` object MUST contain:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `error_code` | string | YES | Machine-readable error code from the list below. |
+| `error_message` | string | YES | Human-readable error description. |
+| `details` | string | NO | Additional diagnostic information. MUST NOT contain sensitive data. |
+
+**Standard J-MDN Error Codes:**
+
+| Code | Description |
+|------|-------------|
+| `DECRYPTION_FAILED` | Cannot decrypt JWE (wrong key, corrupted ciphertext) |
+| `SIGNATURE_INVALID` | JWS signature verification failed (tampered or wrong key) |
+| `UNKNOWN_DOCUMENT_TYPE` | The `document_type` is not supported by receiver |
+| `PAYLOAD_TOO_LARGE` | Message exceeds receiver's processing limits |
+| `INTERNAL_ERROR` | Receiver encountered an internal processing error |
+
+#### 7.3.5 J-MDN Delivery Protocol
+
+**HTTP Request:**
+```http
+POST {receipt_webhook} HTTP/1.1
+Host: {sender_host}
+Content-Type: application/json
+X-FideX-Original-Message-ID: {original_message_id}
+
+{J-MDN JSON body}
+```
+
+**Expected Response:**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "receipt_acknowledged": true
+}
+```
+
+**Timing Requirements:**
+- Receiver SHOULD send J-MDN within 5 minutes of receiving the original message
+- If the receiver cannot process within 5 minutes, it SHOULD still send the J-MDN when processing completes
+- There is no strict upper time limit (processing is asynchronous by design)
+
+#### 7.3.6 J-MDN Delivery Retry
+
+If the sender's `receipt_webhook` is unreachable, the receiver SHOULD retry J-MDN delivery:
+
+- Attempt 1: Immediate
+- Attempt 2: +1 minute
+- Attempt 3: +5 minutes
+- Attempt 4: +15 minutes
+- Attempt 5: +1 hour
+
+After 5 attempts, the receiver SHOULD log the failure and store the J-MDN for manual retrieval. The receiver MUST NOT discard an undelivered J-MDN.
 
 ### 7.4 Retry Semantics
 
@@ -607,14 +746,205 @@ Content-Type: application/json
 
 ---
 
+## Appendix C: Conformance Profiles
+
+FideX defines three conformance profiles to enable progressive adoption. Implementations MUST declare which profile(s) they conform to.
+
+### C.1 FideX Core (REQUIRED for all conforming implementations)
+
+An implementation claiming **FideX Core** conformance MUST support:
+
+| Requirement | Specification Reference |
+|-------------|------------------------|
+| HTTP/1.1 over TLS 1.3 | Section 2.1 |
+| `Content-Type: application/json` | Section 2.4 |
+| Routing header with ALL required fields (including `receipt_webhook`) | Section 3.2 |
+| Sign-then-encrypt: `JWE(JWS(payload))` | Section 3.3 |
+| RS256 signature algorithm | Section 4.1 |
+| RSA-OAEP key encryption + A256GCM content encryption | Section 4.2 |
+| RSA key size ≥ 2048 bits | Section 4.1 |
+| JWKS endpoint at `/.well-known/jwks.json` | Section 5.1 |
+| AS5 configuration endpoint | Section 6.2 |
+| 4-phase discovery handshake | Section 6.3 |
+| Message state machine (QUEUED → SENT → DELIVERED/FAILED) | Section 7.1 |
+| J-MDN generation and delivery (positive and negative) | Section 7.3 |
+| J-MDN signature (JWS with RS256) | Section 7.3.3 |
+| Hash verification in J-MDN (`sha256:{hex}`) | Section 7.3.2 |
+| Standard error codes and HTTP status codes | Section 8 |
+| Replay detection via message_id cache | Section 9.2 |
+| Timestamp validation (±15 minutes) | Section 9.2 |
+
+### C.2 FideX Enhanced (RECOMMENDED for production deployments)
+
+An implementation claiming **FideX Enhanced** conformance MUST satisfy FideX Core AND:
+
+| Requirement | Description |
+|-------------|-------------|
+| HTTP/2 support | Multiplexed connections for high-throughput partners |
+| Separate signing and encryption keys | Different `kid` for `use: "sig"` and `use: "enc"` |
+| RSA key size ≥ 4096 bits | Stronger cryptographic keys |
+| Key rotation support | Publish overlapping keys during rotation period |
+| J-MDN delivery retry | Retry undelivered J-MDNs per Section 7.3.6 |
+| Rate limiting | Per-partner rate limiting on all endpoints |
+| Structured JSON logging | Security event logging with correlation IDs |
+| Health endpoints | `/health` and `/ready` endpoints |
+
+### C.3 FideX Edge (OPTIONAL for specialized deployments)
+
+An implementation claiming **FideX Edge** conformance MUST satisfy FideX Enhanced AND:
+
+| Requirement | Description |
+|-------------|-------------|
+| HTTP/3 over QUIC | Connection resilience for mobile/edge nodes |
+| Mutual TLS (mTLS) | Client certificate authentication |
+| HSM key storage | Private keys stored in Hardware Security Module |
+| Batch receipt support | Single J-MDN acknowledging multiple messages (future v1.1) |
+
+### C.4 Conformance Declaration
+
+Implementations SHOULD declare conformance in their AS5 configuration:
+
+```json
+{
+  "fidex_version": "1.0",
+  "conformance_profile": "enhanced",
+  "...": "..."
+}
+```
+
+Valid values: `"core"`, `"enhanced"`, `"edge"`
+
+---
+
+## Appendix D: Interoperability Test Vectors
+
+This appendix provides known-answer test vectors that allow implementers to verify their JOSE cryptographic operations produce correct output. These keys are for TESTING ONLY and MUST NOT be used in production.
+
+### D.1 Test RSA Key Pair (2048-bit, Testing Only)
+
+**⚠️ WARNING: This key pair is PUBLIC and MUST NOT be used for production traffic.**
+
+**Test Private Key (PEM):**
+```
+-----BEGIN RSA PRIVATE KEY-----
+MIIEowIBAAKCAQEA2a2rwplBQLHgcAD3AFHS1FLo1KRJcE3sSSSqk+oeaBAXnCk7
+pQUlFFjnMIYrijWO2UhqxJ6dVB1YzZ2MBaPC/k1XjDw8CbU79gg3K9gVq0GUS4Ar
+QFPnHSQPIBPOpa8NJM0YXf1FBfHKcHa7kW0jxbGSXjCx0J3AmWP1V0QHqbVW8c/Z
+gxjTFZHQkdFKLRsweQzS0JxLpLQGnRKFi5pr5V0PC8BDONH4MjK5pT1UEDf5NJRU
+TqBuqBv7JjfBCm3Aq0rz2BisJQr3yyIPJz1KjhvtG5R8LUCNqW5cfAqpDkE3Fjns
+Y6ZJCWPe7+bOz5W/qK+3h7Gfjcp96yzC1+HewIDAQABAoIBAF0k1r0UVqVWZK/x
+g0JYwB0eFaRxqjLLcsZJNL6eHdBDVcf7gVdVH/CWKHl3mMnVMLYrgrjGv0v3Xk1p
+jI2e/1dM6+xRnPOD9f0HH8Z5Z1A5eHbDqS7IQJKPB8IEVAEv+q8I0U+IJ7xORVj
+y8r+o9nJaFvmM1a4YelFQlpIjErFVTFXfB1R13FwFN4fR24PsF27YBGMqB85HJNx
+d8K8x3S4CTQPzl0MUj3z6LYNzKhJLqSq8MN5dA3fcqSZ8uft+LJDB4h1J0QK6Hrp
+EzYRH6SiAF0qVjOOz1QIOhmFbkFbvccbxNj0N4c0y7G/FDOsjE7C1e7VQm9fcFre
+JEd8a0ECgYEA74MZxbS5JBbGO/1HVHBj+hFkNjThMaXrjzr5MF0Uy3J5tB+VgVrN
+XxB2BjvYT1GU5LRrq5A7I8kG3H+dKe+R10MDZM28KFbOYR4a1y5qlXe7Lsj7J28V
+dZH+xyLqZnJNLiK3aY3DVfi3pd8z8lO+FT7Mmk1bWKy3IkzmPl+V0ECgYEA6Glqm
+a6dFfZxL7Jr6pGZ7kYv3x3I0qNkELBT0j3g6SQdLqr0RXlxfBFdGmajb9dlh0C7x
+H9V9M22KFpna4/OIhPD9DSj5pmf2W+oMQIfWq5KFXlq1J3MhcIqDE3cVMGJL/J2w
+K5f6MXY2SHbO6EH6XzPl0g8Wa2b5e5V3d3c1YbsCgYBF1c6LMVBRcWv3j+n7nxBa
+VKR7VINcL1LFBI1H5Vbha/kFdcwR8coxSDV1xJsyi+VE9d1DXHUC3R1jrSPHb5Fe
+GPbwN3p5sXB5pBLUNHr3rZdyGdjU8fJ8jHdHJ8V4NpFV3CDp9F7k3Cob3LXhI3rl
+NqK5mH7HPm0InMf3BnbPAQKBgD3y2asv+ORA4p4l6ESfNJB7BjfjFBIPJCn0X4oB
+lYGjXAPWeN+BDPUJ5jKVA5bg0Bh+hUmL3XDBf7mS7VfaJkw6wlJQpO5MJNq+7hjh
+Q7JARsDNkh+Pk6IFxPe/QiUHCOiLxlp2eRUqBWED7E7GQLHJ3VLEheSV+Lq2+YC0
+sJkxAoGBALXfJKLZlNwvvBMDnmjlCsI5GCoFCiNddrYrO/GIXdV8/BcOBnL9K+TU
+KVmJRJfZhSN0AfdQrfABNV0yNBBaeXVW2kXR28lMt15RpVqIK0PboH+hXfCxPqnV
+K6LYwxBTcX/iJLPSiJy7Cmi7NhfQhGBFq2bVeJFnF0H8r9g3vb5v
+-----END RSA PRIVATE KEY-----
+```
+
+**Test Public Key (PEM):**
+```
+-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2a2rwplBQLHgcAD3AFHS
+1FLo1KRJcE3sSSSqk+oeaBAXnCk7pQUlFFjnMIYrijWO2UhqxJ6dVB1YzZ2MBaPC
+/k1XjDw8CbU79gg3K9gVq0GUS4ArQFPnHSQPIBPOpa8NJM0YXf1FBfHKcHa7kW0j
+xbGSXjCx0J3AmWP1V0QHqbVW8c/ZgxjTFZHQkdFKLRsweQzS0JxLpLQGnRKFi5pr
+5V0PC8BDONH4MjK5pT1UEDf5NJRUTqBuqBv7JjfBCm3Aq0rz2BisJQr3yyIPJz1K
+jhvtG5R8LUCNqW5cfAqpDkE3FjnsY6ZJCWPe7+bOz5W/qK+3h7Gfjcp96yzC1+He
+wIDAQAB
+-----END PUBLIC KEY-----
+```
+
+### D.2 Test Payload
+
+**Raw Business Payload (UTF-8 bytes):**
+```json
+{"order_id":"PO-TEST-001","amount":100.00,"currency":"USD"}
+```
+
+**SHA-256 Hash of Payload:**
+```
+sha256:bf21a9e8fbc5a3846fb05b4fa0859e0917b2202f9a69e4c98b7b0f09cb281e71
+```
+
+### D.3 Expected Test Outputs
+
+Given the test key pair and payload above:
+
+**JWS Header:**
+```json
+{"alg":"RS256","kid":"test-sign-2026-01"}
+```
+
+**JWE Header:**
+```json
+{"alg":"RSA-OAEP","enc":"A256GCM","kid":"test-enc-2026-01"}
+```
+
+**Routing Header:**
+```json
+{
+  "fidex_version": "1.0",
+  "message_id": "fdx-00000000-0000-0000-0000-000000000001",
+  "sender_id": "urn:gln:0000000000001",
+  "receiver_id": "urn:gln:0000000000002",
+  "document_type": "GS1_ORDER_JSON",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "receipt_webhook": "https://test.sender.example.com/receipt"
+}
+```
+
+**Expected J-MDN (on success):**
+```json
+{
+  "original_message_id": "fdx-00000000-0000-0000-0000-000000000001",
+  "status": "DELIVERED",
+  "receiver_id": "urn:gln:0000000000002",
+  "hash_verification": "sha256:bf21a9e8fbc5a3846fb05b4fa0859e0917b2202f9a69e4c98b7b0f09cb281e71",
+  "timestamp": "2026-01-01T00:00:01.000Z",
+  "error_log": null,
+  "signature": "<JWS signed by receiver's private key>"
+}
+```
+
+### D.4 Verification Procedure
+
+To verify a FideX implementation:
+
+1. **Sign Test:** Sign the test payload using RS256 with the test private key. Verify the resulting JWS using the test public key. The verified payload MUST match the original.
+
+2. **Encrypt Test:** Encrypt the JWS from step 1 using RSA-OAEP/A256GCM with the test public key. Decrypt using the test private key. The decrypted content MUST match the JWS from step 1.
+
+3. **Hash Test:** Compute `SHA-256` of the raw payload bytes. The result MUST equal `bf21a9e8fbc5a3846fb05b4fa0859e0917b2202f9a69e4c98b7b0f09cb281e71`.
+
+4. **Round-Trip Test:** Construct a complete FideX envelope using the test routing header and encrypted payload. Parse the envelope, decrypt, verify signature, and extract payload. The result MUST match the original test payload.
+
+5. **J-MDN Test:** Construct a J-MDN for the test message. Sign with the test private key. Verify the J-MDN signature using the test public key.
+
+---
+
 ## Document Status
 
 **Version:** 1.0 Draft  
 **Status:** Proposed Standard  
-**Last Updated:** February 20, 2026  
+**Last Updated:** February 23, 2026  
 **License:** Creative Commons Attribution 4.0 International (CC BY 4.0)
 
 **Change Log:**
+- 2026-02-23: Critical improvements — document hierarchy, complete J-MDN spec, conformance profiles, test vectors, receipt_webhook made REQUIRED, timestamp format standardized
 - 2026-02-20: Initial specification release
 
 **Feedback:**

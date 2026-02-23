@@ -1,14 +1,28 @@
-Here is the draft of the **Official FideX Protocol Specification**. It is structured similarly to an IETF RFC (Request for Comments) to establish immediate credibility, but modernized for web developers.
-
-This document serves as the foundational rulebook for the "AS5" standard.
-
----
-
-# FideX Protocol Specification (Draft v1.0)
+# FideX Annotated Specification (Draft v1.0)
 
 **Title:** Fast Integration for Digital Enterprises eXchange (FideX)
 **Status:** Draft / Proposed Standard
 **Target Application:** B2B Supply Chain & EDI Interoperability
+
+---
+
+> **Document Status: INFORMATIVE**
+>
+> This is the **annotated companion document** to the FideX Protocol Specification.
+> It provides detailed rationale, architecture explanations, code examples, and
+> implementation guidance that supplement the normative specification.
+>
+> **This document is NOT the authoritative specification.** In case of conflict,
+> the normative specification takes precedence:
+>
+> - `fidex-protocol-specification.md` — **NORMATIVE** authoritative specification
+> - **This document** (`fidex-annotated-specification.md`) — INFORMATIVE companion
+> - `fidex-security-guide.md` — INFORMATIVE operational security best practices
+> - `fidex-implementation-guide.md` — INFORMATIVE multi-language implementation examples
+> - `openapi.yaml` — **NORMATIVE** OpenAPI 3.0 machine-readable contract
+>
+> Developers should read the normative specification first, then consult this
+> document for deeper understanding and practical examples.
 
 ## Abstract
 

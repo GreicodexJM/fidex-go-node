@@ -3,8 +3,18 @@ info:
   title: FideX Protocol Gateway (Edge Node)
   version: 1.0.0
   description: >
-    The reference implementation for the Fast Integration for Digital Enterprises eXchange (FideX) protocol. 
-    This API handles local ERP transmission requests, public inbound JWE payloads, and asynchronous J-MDN receipts.
+    The reference implementation for the Fast Integration for Digital Enterprises eXchange (FideX) protocol.
+    This API handles local ERP transmission requests, public inbound JWE payloads, partner discovery,
+    and asynchronous J-MDN receipts.
+    
+    **Document Status:** This OpenAPI specification is NORMATIVE and MUST match the
+    FideX Protocol Specification (fidex-protocol-specification.md) exactly.
+  contact:
+    name: FideX Protocol Working Group
+    url: https://github.com/fidex-protocol/specification
+  license:
+    name: CC BY 4.0
+    url: https://creativecommons.org/licenses/by/4.0/
 
 servers:
   - url: http://localhost:8080
@@ -12,20 +22,47 @@ servers:
   - url: https://api.fidex.example.com
     description: Public Edge Interface (External Network)
 
+tags:
+  - name: Internal ERP
+    description: Endpoints consumed by the local ERP system (internal network only)
+  - name: Public B2B
+    description: Endpoints exposed to external trading partners (public internet)
+  - name: Discovery
+    description: Partner discovery, registration, and key distribution
+  - name: Health
+    description: Node health and readiness probes
+
 paths:
+  # ──────────────────────────────────────────────
+  #  Internal ERP Endpoints
+  # ──────────────────────────────────────────────
   /api/v1/transmit:
     post:
       summary: Transmit a Business Document
-      description: (Internal) Accepts a raw JSON payload from the local ERP, wraps it in the FideX cryptographic envelope, and queues it for transmission.
+      description: >
+        (Internal) Accepts a raw JSON payload from the local ERP, wraps it in the
+        FideX cryptographic envelope (JWS → JWE), and queues it for transmission
+        to the destination trading partner.
       operationId: transmitDocument
       tags:
         - Internal ERP
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/TransmitRequest'
+            example:
+              destination_partner_id: "urn:gln:0614141000012"
+              document_type: "GS1_ORDER_JSON"
+              receipt_webhook: "http://odoo.local/fidex/receipt"
+              payload:
+                order_id: "PO-2026-00123"
+                order_date: "2026-02-20"
+                total_amount: 2499.00
       responses:
         '202':
           description: Payload accepted and queued for transmission.
@@ -35,12 +72,32 @@ paths:
                 $ref: '#/components/schemas/TransmitResponse'
         '400':
           description: Invalid request structure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized. Missing or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
-  /api/v1/inbound:
+  # ──────────────────────────────────────────────
+  #  Public B2B Endpoints
+  # ──────────────────────────────────────────────
+  /api/v1/receive:
     post:
       summary: Receive a FideX Envelope
-      description: (Public) The primary webhook for external Trading Partners to POST encrypted FideX envelopes (JWE).
-      operationId: receiveInbound
+      description: >
+        (Public) The primary endpoint for external Trading Partners to POST
+        encrypted FideX envelopes. The envelope contains a cleartext routing_header
+        and an encrypted_payload (JWE wrapping a JWS-signed business document).
+        
+        An HTTP 202 response indicates structural acceptance ONLY. Business-level
+        acknowledgment is delivered asynchronously via J-MDN to the sender's
+        receipt_webhook.
+      operationId: receiveMessage
       tags:
         - Public B2B
       requestBody:
@@ -49,16 +106,63 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/FidexEnvelope'
+            example:
+              routing_header:
+                fidex_version: "1.0"
+                message_id: "fdx-a1b2c3d4-e5f6-g7h8-i9j0-k1l2m3n4o5p6"
+                sender_id: "urn:gln:0614141000005"
+                receiver_id: "urn:gln:0614141000012"
+                document_type: "GS1_ORDER_JSON"
+                timestamp: "2026-02-20T18:30:00.000Z"
+                receipt_webhook: "https://api.sender.com/fidex/receipt"
+              encrypted_payload: "eyJhbGciOiJSU0EtT0FFUCIsImVuYyI6IkEyNTZHQ00ifQ..."
       responses:
         '202':
           description: Envelope structurally valid and accepted for processing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcceptedResponse'
+        '400':
+          description: Invalid routing header or malformed JWE.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized. Missing or invalid JWE.
+          description: Unknown partner or invalid signature.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Message exceeds maximum size limit (10 MB).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded. Retry with exponential backoff.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
 
   /api/v1/receipt:
     post:
       summary: Receive a J-MDN Receipt
-      description: (Public) The webhook for external Trading Partners to POST asynchronous delivery receipts.
+      description: >
+        (Public) The endpoint for external Trading Partners to POST asynchronous
+        J-MDN (JSON Message Disposition Notification) receipts. The receipt is
+        a JWS-signed JSON object proving message delivery or reporting failure.
+        
+        The J-MDN MUST be signed with the receiver's private key to provide
+        non-repudiation proof of delivery.
       operationId: receiveReceipt
       tags:
         - Public B2B
@@ -68,140 +172,771 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/JmdnEnvelope'
-      responses:
-        '202':
-          description: Receipt structurally valid and accepted for processing.
-
-  /.well-known/jwks.json:
-    get:
-      summary: JSON Web Key Set (JWKS) Discovery
-      description: (Public) Exposes the Node's public RSA keys so Trading Partners can encrypt payloads destined for this node.
-      operationId: getJwks
-      tags:
-        - Discovery & Security
+            example:
+              original_message_id: "fdx-a1b2c3d4-e5f6-g7h8-i9j0-k1l2m3n4o5p6"
+              status: "DELIVERED"
+              receiver_id: "urn:gln:0614141000012"
+              hash_verification: "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+              timestamp: "2026-02-20T18:30:02.000Z"
+              error_log: null
+              signature: "eyJhbGciOiJSUzI1NiIsImtpZCI6InJlY2VpdmVyLWtleS0xIn0..."
       responses:
         '200':
-          description: A standard JWKS object containing public keys.
+          description: Receipt acknowledged.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  keys:
-                    type: array
-                    items:
-                      type: object
-                      description: A standard JWK object (RFC 7517)
+                $ref: '#/components/schemas/ReceiptAcknowledgment'
+        '400':
+          description: Invalid J-MDN structure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: J-MDN signature verification failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ──────────────────────────────────────────────
+  #  Discovery Endpoints
+  # ──────────────────────────────────────────────
+  /.well-known/jwks.json:
+    get:
+      summary: JSON Web Key Set (JWKS) Discovery
+      description: >
+        (Public) Exposes the Node's public RSA keys so Trading Partners can
+        encrypt payloads destined for this node and verify signatures from it.
+        
+        This endpoint MUST be publicly accessible without authentication.
+        Responses SHOULD include Cache-Control headers (recommended: 1 hour max-age).
+      operationId: getJwks
+      tags:
+        - Discovery
+      responses:
+        '200':
+          description: A standard JWKS object containing public keys.
+          headers:
+            Cache-Control:
+              description: Caching directive for JWKS.
+              schema:
+                type: string
+                example: "public, max-age=3600"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JwksDocument'
+              example:
+                keys:
+                  - kty: "RSA"
+                    use: "sig"
+                    kid: "node-2026-02-sign-primary"
+                    alg: "RS256"
+                    n: "xGOr-H7A-PWXsz7d8kN6v..."
+                    e: "AQAB"
+                  - kty: "RSA"
+                    use: "enc"
+                    kid: "node-2026-02-enc-primary"
+                    alg: "RSA-OAEP"
+                    n: "yHPs-I8B-QYXtz8e9lO7w..."
+                    e: "AQAB"
+
+  /as5/config:
+    get:
+      summary: AS5 Configuration Discovery
+      description: >
+        (Public) Returns the AS5 configuration document describing this node's
+        capabilities, endpoints, and identity. The URL MAY include an optional
+        single-use security token as query parameter for controlled discovery.
+        
+        Note: This endpoint path is NOT required to be at this location.
+        The AS5 configuration URL can be at any path and is shared via QR code
+        or secure channel.
+      operationId: getAS5Config
+      tags:
+        - Discovery
+      parameters:
+        - name: token
+          in: query
+          required: false
+          description: Optional single-use security token for controlled discovery.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: AS5 configuration document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AS5Configuration'
+        '401':
+          description: Security token invalid or expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/register:
+    post:
+      summary: Partner Registration
+      description: >
+        (Public) Accepts a JWS-signed registration request from an initiating
+        trading partner. The request body is a JWS compact serialization
+        (Content-Type: application/jose).
+        
+        The responder validates the security token (if required), fetches the
+        initiator's AS5 configuration and JWKS, verifies the JWS signature,
+        and registers the partner.
+      operationId: registerPartner
+      tags:
+        - Discovery
+      requestBody:
+        required: true
+        content:
+          application/jose:
+            schema:
+              type: string
+              description: >
+                JWS compact serialization containing the signed registration
+                request payload.
+      responses:
+        '200':
+          description: Partner successfully registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegistrationResponse'
+        '400':
+          description: Invalid registration request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Invalid security token or signature verification failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Partner already registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ──────────────────────────────────────────────
+  #  Health Endpoints
+  # ──────────────────────────────────────────────
+  /health:
+    get:
+      summary: Liveness Probe
+      description: Returns node health status. Used by orchestrators for liveness checks.
+      operationId: healthCheck
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Node is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Node is unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /ready:
+    get:
+      summary: Readiness Probe
+      description: >
+        Returns whether the node is ready to accept traffic.
+        Checks database connectivity, key availability, and queue health.
+      operationId: readinessCheck
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Node is ready to accept traffic.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Node is not ready.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
 
 components:
+  # ──────────────────────────────────────────────
+  #  Security Schemes
+  # ──────────────────────────────────────────────
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: Bearer token for internal ERP API authentication.
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for internal ERP API authentication.
+
+  # ──────────────────────────────────────────────
+  #  Schemas
+  # ──────────────────────────────────────────────
   schemas:
+
+    # ── Internal ERP Schemas ──────────────────────
     TransmitRequest:
       type: object
       required:
         - destination_partner_id
         - document_type
+        - receipt_webhook
         - payload
       properties:
         destination_partner_id:
           type: string
+          description: The registered URN identifier of the receiving trading partner.
           example: "urn:gln:0614141000012"
-          description: The registered ID of the receiving trading partner.
+          pattern: "^urn:[a-z]+:.+$"
         document_type:
           type: string
+          description: Business document type identifier (uppercase alphanumeric with underscores).
           example: "GS1_ORDER_JSON"
+          pattern: "^[A-Z0-9_]+$"
         receipt_webhook:
           type: string
           format: uri
-          description: Optional local webhook to notify the ERP when the J-MDN arrives.
-          example: "http://odoo.local/fidex/receipt"
+          description: >
+            HTTPS URL where the J-MDN receipt should be delivered after the
+            destination partner processes the message. REQUIRED for non-repudiation.
+          example: "https://erp.mycompany.com/fidex/receipt"
         payload:
           type: object
-          description: The raw business document to be transmitted.
+          description: The raw business document to be transmitted (arbitrary JSON).
 
     TransmitResponse:
       type: object
+      required:
+        - message_id
+        - status
+        - timestamp
       properties:
         message_id:
           type: string
-          format: uuid
-          example: "fdx-uuid-1234-5678"
+          description: Globally unique message identifier assigned by the node.
+          example: "fdx-a1b2c3d4-e5f6-g7h8-i9j0-k1l2m3n4o5p6"
         status:
           type: string
+          enum: [QUEUED]
+          description: Initial message status (always QUEUED on acceptance).
           example: "QUEUED"
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 UTC timestamp of acceptance.
+          example: "2026-02-20T18:30:00.000Z"
 
+    # ── FideX Envelope (Public B2B) ───────────────
     RoutingHeader:
       type: object
+      description: >
+        Cleartext JSON routing metadata. This design allows intermediary gateways,
+        load balancers, and routing infrastructure to process messages without
+        requiring access to private decryption keys.
       required:
         - fidex_version
         - message_id
         - sender_id
         - receiver_id
+        - document_type
+        - timestamp
+        - receipt_webhook
+      properties:
+        fidex_version:
+          type: string
+          description: Protocol version (semantic versioning "major.minor").
+          example: "1.0"
+          pattern: "^\\d+\\.\\d+$"
+        message_id:
+          type: string
+          description: >
+            Globally unique message identifier. UUID v4 format with recommended
+            "fdx-" prefix. MUST be unique across all messages ever sent.
+          example: "fdx-a1b2c3d4-e5f6-g7h8-i9j0-k1l2m3n4o5p6"
+        sender_id:
+          type: string
+          description: URN identifying the sending organization.
+          example: "urn:gln:0614141000005"
+          pattern: "^urn:[a-z]+:.+$"
+        receiver_id:
+          type: string
+          description: URN identifying the receiving organization.
+          example: "urn:gln:0614141000012"
+          pattern: "^urn:[a-z]+:.+$"
+        document_type:
+          type: string
+          description: >
+            Business document type identifier. Standard types use uppercase
+            alphanumeric with underscores. Custom types use reverse domain notation.
+          example: "GS1_ORDER_JSON"
+        timestamp:
+          type: string
+          format: date-time
+          description: >
+            ISO 8601 UTC timestamp when message was created.
+            MUST include milliseconds and UTC designator Z.
+            Format: YYYY-MM-DDTHH:mm:ss.SSSZ
+          example: "2026-02-20T18:30:00.000Z"
+        receipt_webhook:
+          type: string
+          format: uri
+          description: >
+            HTTPS URL where the J-MDN receipt should be delivered.
+            REQUIRED for non-repudiation chain integrity. HTTP (non-TLS) is NOT allowed.
+          example: "https://api.sender.com/fidex/receipt"
+
+    FidexEnvelope:
+      type: object
+      description: >
+        The complete FideX message envelope consisting of a cleartext routing_header
+        and an encrypted_payload containing JWE(JWS(business_document)).
+      required:
+        - routing_header
+        - encrypted_payload
+      properties:
+        routing_header:
+          $ref: '#/components/schemas/RoutingHeader'
+        encrypted_payload:
+          type: string
+          description: >
+            JWE compact serialization containing the signed (JWS) business document.
+            Structure: base64url(header).base64url(encrypted_key).base64url(iv).base64url(ciphertext).base64url(auth_tag)
+          example: "eyJhbGciOiJSU0EtT0FFUCIsImVuYyI6IkEyNTZHQ00ifQ.OKOawDo13g..."
+
+    AcceptedResponse:
+      type: object
+      required:
+        - status
+        - message_id
+        - timestamp
+      properties:
+        status:
+          type: string
+          enum: [accepted]
+          example: "accepted"
+        message_id:
+          type: string
+          description: Echo of the message_id from routing_header.
+          example: "fdx-a1b2c3d4-e5f6-g7h8-i9j0-k1l2m3n4o5p6"
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-02-20T18:30:00.000Z"
+
+    # ── J-MDN Receipt ─────────────────────────────
+    JmdnEnvelope:
+      type: object
+      description: >
+        JSON Message Disposition Notification (J-MDN). This is the asynchronous
+        business receipt that provides cryptographic proof of delivery or failure.
+        The entire J-MDN MUST be signed by the receiver (JWS) for non-repudiation.
+      required:
+        - original_message_id
+        - status
+        - receiver_id
+        - hash_verification
+        - timestamp
+        - signature
+      properties:
+        original_message_id:
+          type: string
+          description: The message_id from the original FideX envelope's routing_header.
+          example: "fdx-a1b2c3d4-e5f6-g7h8-i9j0-k1l2m3n4o5p6"
+        status:
+          type: string
+          enum: [DELIVERED, FAILED]
+          description: >
+            DELIVERED = message successfully decrypted, signature verified, and ingested.
+            FAILED = processing failed (see error_log for details).
+          example: "DELIVERED"
+        receiver_id:
+          type: string
+          description: >
+            URN of the receiver (the party generating this J-MDN).
+            MUST match the receiver_id in the original routing_header.
+          example: "urn:gln:0614141000012"
+        hash_verification:
+          type: string
+          description: >
+            SHA-256 hash of the raw business payload bytes BEFORE JWS signing.
+            Format: "sha256:{hex_encoded_hash}".
+            This proves the receiver decrypted the exact payload the sender signed.
+          example: "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+          pattern: "^sha256:[a-f0-9]{64}$"
+        timestamp:
+          type: string
+          format: date-time
+          description: >
+            ISO 8601 UTC timestamp when J-MDN was created.
+            Format: YYYY-MM-DDTHH:mm:ss.SSSZ
+          example: "2026-02-20T18:30:02.000Z"
+        error_log:
+          nullable: true
+          description: >
+            Error details when status is FAILED. MUST be null when status is DELIVERED.
+            MUST be present when status is FAILED.
+          oneOf:
+            - $ref: '#/components/schemas/JmdnErrorLog'
+            - type: "null"
+        signature:
+          type: string
+          description: >
+            JWS compact serialization of the J-MDN fields (excluding this signature field).
+            The JWS MUST use RS256 algorithm and include the receiver's kid in the header.
+            This provides non-repudiation proof that the receiver generated this receipt.
+          example: "eyJhbGciOiJSUzI1NiIsImtpZCI6InJlY2VpdmVyLWtleS0xIn0..."
+
+    JmdnErrorLog:
+      type: object
+      description: Error details for negative J-MDN (status = FAILED).
+      required:
+        - error_code
+        - error_message
+      properties:
+        error_code:
+          type: string
+          enum:
+            - DECRYPTION_FAILED
+            - SIGNATURE_INVALID
+            - UNKNOWN_DOCUMENT_TYPE
+            - PAYLOAD_TOO_LARGE
+            - INTERNAL_ERROR
+          description: Machine-readable error code.
+          example: "DECRYPTION_FAILED"
+        error_message:
+          type: string
+          description: Human-readable error description.
+          example: "Unable to decrypt payload with provided key"
+        details:
+          type: string
+          nullable: true
+          description: Additional diagnostic information (MUST NOT contain sensitive data).
+          example: "Key ID mismatch or corrupted ciphertext"
+
+    ReceiptAcknowledgment:
+      type: object
+      required:
+        - receipt_acknowledged
+      properties:
+        receipt_acknowledged:
+          type: boolean
+          example: true
+
+    # ── Discovery Schemas ─────────────────────────
+    JwksDocument:
+      type: object
+      description: JSON Web Key Set per RFC 7517.
+      required:
+        - keys
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: '#/components/schemas/JwkEntry'
+
+    JwkEntry:
+      type: object
+      description: A single JSON Web Key per RFC 7517.
+      required:
+        - kty
+        - use
+        - kid
+        - alg
+        - "n"
+        - e
+      properties:
+        kty:
+          type: string
+          enum: [RSA]
+          description: Key type. MUST be "RSA" for FideX v1.0.
+          example: "RSA"
+        use:
+          type: string
+          enum: [sig, enc]
+          description: '"sig" for signing keys, "enc" for encryption keys.'
+          example: "sig"
+        kid:
+          type: string
+          description: Unique key identifier within the JWKS.
+          example: "node-2026-02-sign-primary"
+        alg:
+          type: string
+          enum: [RS256, RSA-OAEP]
+          description: Algorithm for this key.
+          example: "RS256"
+        "n":
+          type: string
+          description: RSA modulus (base64url-encoded). Minimum 2048 bits.
+          example: "xGOr-H7A-PWXsz7d8kN6v..."
+        e:
+          type: string
+          description: RSA exponent (base64url-encoded). Typically "AQAB" (65537).
+          example: "AQAB"
+
+    AS5Configuration:
+      type: object
+      description: AS5 configuration document describing node capabilities and identity.
+      required:
+        - fidex_version
+        - node_id
+        - organization_name
+        - public_domain
+        - supported_versions
+        - endpoints
+        - security
+      properties:
+        fidex_version:
+          type: string
+          description: Current active protocol version.
+          example: "1.0"
+        node_id:
+          type: string
+          description: Unique URN identifier for this node.
+          example: "urn:gln:0614141000005"
+        organization_name:
+          type: string
+          description: Human-readable organization name.
+          example: "ACME Supply Corp"
+        public_domain:
+          type: string
+          description: Public-facing domain name for this node.
+          example: "fidex.acmesupply.com"
+        supported_versions:
+          type: array
+          items:
+            type: string
+          description: List of FideX protocol versions this node supports.
+          example: ["1.0"]
+        capabilities:
+          $ref: '#/components/schemas/NodeCapabilities'
+        endpoints:
+          $ref: '#/components/schemas/NodeEndpoints'
+        security:
+          $ref: '#/components/schemas/NodeSecurity'
+
+    NodeCapabilities:
+      type: object
+      properties:
+        supported_document_types:
+          type: array
+          items:
+            type: string
+          example: ["GS1_ORDER_JSON", "GS1_INVOICE_JSON", "X12_850"]
+        max_message_size_mb:
+          type: integer
+          example: 10
+        supports_compression:
+          type: boolean
+          example: true
+        supported_protocols:
+          type: array
+          items:
+            type: string
+          example: ["http/1.1", "http/2"]
+
+    NodeEndpoints:
+      type: object
+      required:
+        - receive_message
+        - register
+        - jwks
+      properties:
+        receive_message:
+          type: string
+          format: uri
+          example: "https://fidex.acmesupply.com/api/v1/receive"
+        register:
+          type: string
+          format: uri
+          example: "https://fidex.acmesupply.com/api/v1/register"
+        jwks:
+          type: string
+          format: uri
+          example: "https://fidex.acmesupply.com/.well-known/jwks.json"
+
+    NodeSecurity:
+      type: object
+      required:
+        - signature_algorithm
+        - encryption_algorithm
+        - content_encryption
+        - minimum_key_size
+      properties:
+        signature_algorithm:
+          type: string
+          example: "RS256"
+        encryption_algorithm:
+          type: string
+          example: "RSA-OAEP"
+        content_encryption:
+          type: string
+          example: "A256GCM"
+        minimum_key_size:
+          type: integer
+          example: 2048
+
+    RegistrationRequest:
+      type: object
+      description: >
+        Registration request payload (sent as JWS compact serialization).
+        The JWS MUST be signed with the initiator's private key using RS256.
+      required:
+        - fidex_version
+        - initiator_node_id
+        - initiator_as5_config_url
+        - timestamp
       properties:
         fidex_version:
           type: string
           example: "1.0"
-        message_id:
-          type: string
-          format: uuid
-        sender_id:
+        initiator_node_id:
           type: string
           example: "urn:gln:0614141000005"
-        receiver_id:
+        initiator_as5_config_url:
           type: string
-          example: "urn:gln:0614141000012"
-        document_type:
+          format: uri
+          example: "https://fidex.acmesupply.com/.well-known/as5-configuration"
+        security_token:
           type: string
+          format: uuid
+          description: Single-use security token (if required by responder).
         timestamp:
           type: string
           format: date-time
-        receipt_webhook:
+          example: "2026-02-20T19:00:00.000Z"
+        contact_email:
+          type: string
+          format: email
+          description: Technical contact for troubleshooting.
+
+    RegistrationResponse:
+      type: object
+      required:
+        - status
+        - responder_node_id
+        - timestamp
+      properties:
+        status:
+          type: string
+          enum: [registered]
+          example: "registered"
+        responder_node_id:
+          type: string
+          example: "urn:gln:0614141000012"
+        responder_as5_config_url:
           type: string
           format: uri
-
-    FidexEnvelope:
-      type: object
-      required:
-        - routing
-        - payload
-      properties:
-        routing:
-          $ref: '#/components/schemas/RoutingHeader'
-        payload:
+          example: "https://fidex.partner.com/.well-known/as5-configuration"
+        message:
           type: string
-          description: The compact JWE (JSON Web Encryption) string containing the signed JWS business document.
-          example: "eyJhbGciOiJSU0EtT0FFUCIsImVuYyI6IkEyNTZHQ00ifQ.OKOawDo13g... (JWE String)"
+          example: "Successfully registered ACME Supply Corp"
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-02-20T19:00:05.000Z"
 
-    JmdnReceipt:
+    # ── Error and Health Schemas ──────────────────
+    ErrorResponse:
       type: object
       required:
-        - original_message_id
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+            - timestamp
+          properties:
+            code:
+              type: string
+              description: Machine-readable error code.
+              enum:
+                - INVALID_ROUTING_HEADER
+                - UNKNOWN_RECEIVER
+                - UNKNOWN_DOCUMENT_TYPE
+                - PAYLOAD_TOO_LARGE
+                - DECRYPTION_FAILED
+                - SIGNATURE_INVALID
+                - UNKNOWN_KEY_ID
+                - INVALID_TOKEN
+                - ALREADY_REGISTERED
+                - CONFIG_UNREACHABLE
+                - RATE_LIMIT_EXCEEDED
+                - INTERNAL_ERROR
+              example: "INVALID_ROUTING_HEADER"
+            message:
+              type: string
+              description: Human-readable error description.
+              example: "Missing required field: receiver_id"
+            timestamp:
+              type: string
+              format: date-time
+              example: "2026-02-20T18:00:00.000Z"
+            field:
+              type: string
+              nullable: true
+              description: The specific field that caused the error (if applicable).
+              example: "receiver_id"
+            request_id:
+              type: string
+              nullable: true
+              description: Request correlation ID for debugging.
+              example: "req-uuid-1234-5678"
+
+    HealthResponse:
+      type: object
+      required:
         - status
         - timestamp
       properties:
-        original_message_id:
-          type: string
-          format: uuid
         status:
           type: string
-          enum: [DELIVERED, FAILED]
-        hash_verification:
-          type: string
-          description: The SHA-256 hash of the original decrypted payload to prove data integrity.
+          enum: [healthy, unhealthy]
+          example: "healthy"
         timestamp:
           type: string
           format: date-time
-        error_log:
-          type: string
-          nullable: true
-
-    JmdnEnvelope:
-      type: object
-      required:
-        - routing
-        - payload
-      properties:
-        routing:
-          $ref: '#/components/schemas/RoutingHeader'
-        payload:
-          type: string
-          description: The compact JWS (JSON Web Signature) string of the JmdnReceipt object.
+          example: "2026-02-20T18:00:00.000Z"
+        checks:
+          type: object
+          properties:
+            database:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [ok, error]
+            queue:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [ok, error]
+            keys:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [ok, error]
