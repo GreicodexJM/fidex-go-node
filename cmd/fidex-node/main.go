@@ -114,11 +114,11 @@ func mustInitContainer(cfg *config.Config) *container.Container {
 }
 
 // buildHandlers constructs the API Handlers wiring all dependencies from the
-// container — replaces the package-level vars used pre-Phase 1.4.
+// container. All persistence flows through repository interfaces — no raw
+// *sql.DB is passed here.
 func buildHandlers(c *container.Container) *api.Handlers {
 	return &api.Handlers{
 		Config:           c.Config,
-		DB:               c.DB,
 		MessageRepo:      c.MessageRepo,
 		PartnerRepo:      c.PartnerRepo,
 		UserRepo:         c.UserRepo,

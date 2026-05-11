@@ -165,6 +165,90 @@ func (r *SQLiteMessageRepository) ListByStatus(ctx context.Context, status domai
 	return messages, nil
 }
 
+// ListPaginated returns messages ordered by created_at DESC.
+// If statusFilter is non-nil, only messages with that status are returned.
+// total counts all matching rows ignoring limit/offset so the caller can
+// build pagination metadata.
+func (r *SQLiteMessageRepository) ListPaginated(
+	ctx context.Context,
+	statusFilter *domain.MessageStatus,
+	limit, offset int,
+) ([]*domain.Message, int, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	args := []interface{}{}
+	listQuery := `SELECT id, message_id, direction, status, payload, retry_count, next_retry_at, last_error, created_at FROM messages`
+	countQuery := `SELECT COUNT(*) FROM messages`
+
+	if statusFilter != nil {
+		listQuery += ` WHERE status = ?`
+		countQuery += ` WHERE status = ?`
+		args = append(args, *statusFilter)
+	}
+	listQuery += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
+
+	var total int
+	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("failed to count messages: %w", err)
+	}
+
+	rowArgs := append(append([]interface{}{}, args...), limit, offset)
+	rows, err := r.db.QueryContext(ctx, listQuery, rowArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to query messages: %w", err)
+	}
+	defer rows.Close()
+
+	messages := []*domain.Message{}
+	for rows.Next() {
+		var msg domain.Message
+		if err := rows.Scan(&msg.ID, &msg.MessageID, &msg.Direction, &msg.Status, &msg.Payload, &msg.RetryCount, &msg.NextRetryAt, &msg.LastError, &msg.CreatedAt); err != nil {
+			return nil, 0, fmt.Errorf("failed to scan message: %w", err)
+		}
+		messages = append(messages, &msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("error iterating messages: %w", err)
+	}
+
+	return messages, total, nil
+}
+
+// CountByStatusSince returns per-status counts of messages created at or after
+// the given instant. Statuses with zero matches are omitted from the result.
+func (r *SQLiteMessageRepository) CountByStatusSince(
+	ctx context.Context,
+	since time.Time,
+) (map[domain.MessageStatus]int, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT status, COUNT(*) FROM messages WHERE created_at >= ? GROUP BY status`,
+		since,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query message counts: %w", err)
+	}
+	defer rows.Close()
+
+	counts := map[domain.MessageStatus]int{}
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, fmt.Errorf("failed to scan count row: %w", err)
+		}
+		counts[domain.MessageStatus(status)] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating counts: %w", err)
+	}
+	return counts, nil
+}
+
 // Delete removes a message by its message_id
 func (r *SQLiteMessageRepository) Delete(ctx context.Context, messageID string) error {
 	if messageID == "" {

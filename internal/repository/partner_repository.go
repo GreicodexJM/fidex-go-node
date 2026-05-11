@@ -168,6 +168,97 @@ func (r *SQLitePartnerRepository) Delete(ctx context.Context, partnerID string) 
 	return nil
 }
 
+// Upsert inserts a partner or, on partner_id conflict, updates the existing
+// row's name / jwks_url / public_key_jwks / last_key_refresh / updated_at.
+// Used by the discovery handler when a partner re-registers.
+func (r *SQLitePartnerRepository) Upsert(ctx context.Context, partner *domain.Partner) error {
+	if partner == nil {
+		return fmt.Errorf("partner cannot be nil")
+	}
+	if partner.PartnerID == "" {
+		return fmt.Errorf("partner_id cannot be empty")
+	}
+
+	now := time.Now()
+	if partner.CreatedAt.IsZero() {
+		partner.CreatedAt = now
+	}
+	partner.UpdatedAt = now
+
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO trading_partners (partner_id, name, jwks_url, message_endpoint, mdn_receipt_endpoint, public_key_jwks, last_key_refresh, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(partner_id) DO UPDATE SET
+			name = excluded.name,
+			jwks_url = excluded.jwks_url,
+			message_endpoint = excluded.message_endpoint,
+			mdn_receipt_endpoint = excluded.mdn_receipt_endpoint,
+			public_key_jwks = excluded.public_key_jwks,
+			last_key_refresh = excluded.last_key_refresh,
+			updated_at = excluded.updated_at`,
+		partner.PartnerID,
+		partner.Name,
+		partner.JWKSUrl,
+		partner.MessageEndpoint,
+		partner.MDNReceiptEndpoint,
+		partner.PublicKeyJWKS,
+		partner.LastKeyRefresh,
+		partner.CreatedAt,
+		partner.UpdatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to upsert partner: %w", err)
+	}
+	return nil
+}
+
+// DeleteByDBID removes a trading partner by its database numeric id.
+func (r *SQLitePartnerRepository) DeleteByDBID(ctx context.Context, id int64) error {
+	result, err := r.db.ExecContext(ctx, `DELETE FROM trading_partners WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("failed to delete partner: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("partner not found: id=%d", id)
+	}
+	return nil
+}
+
+// UpdateNameByDBID renames a partner identified by its database numeric id.
+func (r *SQLitePartnerRepository) UpdateNameByDBID(ctx context.Context, id int64, name string) error {
+	if name == "" {
+		return fmt.Errorf("name cannot be empty")
+	}
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE trading_partners SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		name, id,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update partner name: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("partner not found: id=%d", id)
+	}
+	return nil
+}
+
+// Count returns the total number of registered partners.
+func (r *SQLitePartnerRepository) Count(ctx context.Context) (int, error) {
+	var count int
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM trading_partners`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("failed to count partners: %w", err)
+	}
+	return count, nil
+}
+
 // List retrieves all trading partners
 func (r *SQLitePartnerRepository) List(ctx context.Context) ([]*domain.Partner, error) {
 	rows, err := r.db.QueryContext(ctx,

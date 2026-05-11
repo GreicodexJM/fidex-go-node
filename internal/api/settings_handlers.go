@@ -135,22 +135,20 @@ func (h *Handlers) rotateKeysHandler(w http.ResponseWriter, r *http.Request) {
 // listUsersHandler handles GET /api/settings/users
 func (h *Handlers) listUsersHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	rows, err := h.DB.Query(`SELECT id, username, created_at FROM users ORDER BY created_at DESC`)
+	rows, err := h.UserRepo.List(ctx)
 	if err != nil {
-		logger.Error(ctx, "Failed to query users: %v", err)
+		logger.Error(ctx, "Failed to load users: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to load users", err)
 		return
 	}
-	defer rows.Close()
 
-	users := []UserResponse{}
-	for rows.Next() {
-		var user UserResponse
-		if err := rows.Scan(&user.ID, &user.Username, &user.CreatedAt); err != nil {
-			logger.Warn(ctx, "Failed to scan user: %v", err)
-			continue
-		}
-		users = append(users, user)
+	users := make([]UserResponse, 0, len(rows))
+	for _, u := range rows {
+		users = append(users, UserResponse{
+			ID:        u.ID,
+			Username:  u.Username,
+			CreatedAt: u.CreatedAt.Format("2006-01-02 15:04:05"),
+		})
 	}
 
 	respondWithJSON(w, http.StatusOK, map[string]interface{}{
@@ -203,30 +201,27 @@ func (h *Handlers) createUserHandler(w http.ResponseWriter, r *http.Request) {
 // deleteUserHandler handles DELETE /api/settings/users/:id
 func (h *Handlers) deleteUserHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	userID := chi.URLParam(r, "id")
+	userIDParam := chi.URLParam(r, "id")
+	userID := parseInt64(userIDParam)
 
 	// Don't allow deleting yourself
-	currentUser, ok := auth.GetUserFromContext(ctx)
-	if ok && currentUser.ID == parseInt64(userID) {
+	if currentUser, ok := auth.GetUserFromContext(ctx); ok && currentUser.ID == userID {
 		respondWithError(w, http.StatusBadRequest, "Cannot delete your own account", nil)
 		return
 	}
 
-	// Delete user
-	_, err := h.DB.Exec(`DELETE FROM users WHERE id = ?`, userID)
-	if err != nil {
+	if err := h.UserRepo.Delete(ctx, userID); err != nil {
 		logger.Error(ctx, "Failed to delete user: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to delete user", err)
 		return
 	}
 
-	// Delete user's sessions
-	_, err = h.DB.Exec(`DELETE FROM sessions WHERE user_id = ?`, userID)
-	if err != nil {
+	// Invalidate any active sessions for the deleted user. Best-effort.
+	if err := h.SessionRepo.DeleteByUserID(ctx, userID); err != nil {
 		logger.Warn(ctx, "Failed to delete user sessions: %v", err)
 	}
 
-	logger.Info(ctx, "User deleted: %s", userID)
+	logger.Info(ctx, "User deleted: %d", userID)
 
 	respondWithJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
@@ -264,9 +259,8 @@ func (h *Handlers) updatePasswordHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Update password
-	_, err = h.DB.Exec(`UPDATE users SET password_hash = ? WHERE id = ?`, newHash, currentUser.ID)
-	if err != nil {
+	// Update password via repository.
+	if err := h.UserRepo.UpdatePassword(ctx, currentUser.ID, newHash); err != nil {
 		logger.Error(ctx, "Failed to update password: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to update password", err)
 		return
@@ -283,36 +277,26 @@ func (h *Handlers) updatePasswordHandler(w http.ResponseWriter, r *http.Request)
 // listPartnersDetailedHandler handles GET /api/settings/partners
 func (h *Handlers) listPartnersDetailedHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	rows, err := h.DB.Query(`
-		SELECT id, partner_id, name, jwks_url, last_key_refresh, created_at
-		FROM trading_partners
-		ORDER BY created_at DESC
-	`)
+	rows, err := h.PartnerRepo.List(ctx)
 	if err != nil {
-		logger.Error(ctx, "Failed to query partners: %v", err)
+		logger.Error(ctx, "Failed to load partners: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to load partners", err)
 		return
 	}
-	defer rows.Close()
 
-	partners := []PartnerResponse{}
-	for rows.Next() {
-		var partner PartnerResponse
-		var lastRefresh, createdAt interface{}
-
-		if err := rows.Scan(&partner.ID, &partner.PartnerID, &partner.Name, &partner.JWKSUrl, &lastRefresh, &createdAt); err != nil {
-			logger.Warn(ctx, "Failed to scan partner: %v", err)
-			continue
+	partners := make([]PartnerResponse, 0, len(rows))
+	for _, p := range rows {
+		resp := PartnerResponse{
+			ID:        p.ID,
+			PartnerID: p.PartnerID,
+			Name:      p.Name,
+			JWKSUrl:   p.JWKSUrl,
+			CreatedAt: p.CreatedAt.Format("2006-01-02 15:04:05"),
 		}
-
-		if lastRefresh != nil {
-			partner.LastKeyRefresh = lastRefresh.(string)
+		if p.LastKeyRefresh != nil {
+			resp.LastKeyRefresh = p.LastKeyRefresh.Format("2006-01-02 15:04:05")
 		}
-		if createdAt != nil {
-			partner.CreatedAt = createdAt.(string)
-		}
-
-		partners = append(partners, partner)
+		partners = append(partners, resp)
 	}
 
 	respondWithJSON(w, http.StatusOK, map[string]interface{}{
@@ -321,9 +305,11 @@ func (h *Handlers) listPartnersDetailedHandler(w http.ResponseWriter, r *http.Re
 }
 
 // updatePartnerHandler handles PUT /api/settings/partners/:id
+// The URL :id is the trading_partners.id (database numeric key) returned by
+// listPartnersDetailedHandler, not the partner_id string.
 func (h *Handlers) updatePartnerHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	partnerID := chi.URLParam(r, "id")
+	dbID := parseInt64(chi.URLParam(r, "id"))
 
 	var req UpdatePartnerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -331,15 +317,13 @@ func (h *Handlers) updatePartnerHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Update partner name
-	_, err := h.DB.Exec(`UPDATE trading_partners SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, req.Name, partnerID)
-	if err != nil {
+	if err := h.PartnerRepo.UpdateNameByDBID(ctx, dbID, req.Name); err != nil {
 		logger.Error(ctx, "Failed to update partner: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to update partner", err)
 		return
 	}
 
-	logger.Info(ctx, "Partner updated: %s", partnerID)
+	logger.Info(ctx, "Partner updated: id=%d", dbID)
 
 	respondWithJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
@@ -348,19 +332,18 @@ func (h *Handlers) updatePartnerHandler(w http.ResponseWriter, r *http.Request) 
 }
 
 // deletePartnerHandler handles DELETE /api/settings/partners/:id
+// The URL :id is the trading_partners.id (database numeric key).
 func (h *Handlers) deletePartnerHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	partnerID := chi.URLParam(r, "id")
+	dbID := parseInt64(chi.URLParam(r, "id"))
 
-	// Delete partner
-	_, err := h.DB.Exec(`DELETE FROM trading_partners WHERE id = ?`, partnerID)
-	if err != nil {
+	if err := h.PartnerRepo.DeleteByDBID(ctx, dbID); err != nil {
 		logger.Error(ctx, "Failed to delete partner: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to delete partner", err)
 		return
 	}
 
-	logger.Info(ctx, "Partner deleted: %s", partnerID)
+	logger.Info(ctx, "Partner deleted: id=%d", dbID)
 
 	respondWithJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,

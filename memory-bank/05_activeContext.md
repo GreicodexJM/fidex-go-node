@@ -1,7 +1,41 @@
 # Active Context: FideX AS5 Node
 
 ## Current Work Focus
-**Refactor Phase 1.6 — Structured logging across all packages** (2026-05-11). Phase 1.4 merged to master. Every `log.Printf`/`log.Println` call outside of `main.go` `must*` helpers now flows through `internal/logging.Logger` with per-package prefixes (`api`, `auth`, `container`, `dashboard`, `discovery`, `main`, `queue`, `watcher`). Bug fix: `RequestIDKey` / `UserIDKey` unified in `internal/logging` (typed `ContextKey`); `internal/api/context.go` re-exports them — request_ids and user_ids now actually propagate from middleware to log lines. `auth.RequireAuth` / `auth.RequireAuthAPI` stamp the authenticated user id into context via `logging.WithUserID` so every downstream log line carries it automatically. Branch: `feature/phase-1.6-structured-logging`.
+**Refactor Phase 1.x — Repository interface gap closed** (2026-05-11). Phase 1.6 merged to master. Dashboard and Settings handlers no longer touch `*sql.DB` directly — every persistence operation flows through the `MessageRepository`, `PartnerRepository`, `UserRepository`, or `SessionRepository` interfaces. The `DB *sql.DB` field on `api.Handlers` is gone, completing the goal stated in Phase 1.3. Branch: `feature/phase-1.x-repo-interface-gap`.
+
+## Recent Changes (2026-05-11) — Phase 1.x (Repository Gap Closure)
+
+### Interface additions (internal/domain/repositories.go)
+- **`MessageRepository.ListPaginated(ctx, statusFilter *MessageStatus, limit, offset int) ([]*Message, int, error)`** — used by dashboard messages list.
+- **`MessageRepository.CountByStatusSince(ctx, since time.Time) (map[MessageStatus]int, error)`** — used by dashboard metrics.
+- **`PartnerRepository.Upsert(ctx, *Partner) error`** — used by discoverPartnerHandler (replaces the previous raw `ON CONFLICT(partner_id) DO UPDATE`).
+- **`PartnerRepository.Count(ctx) (int, error)`** — used by dashboard metrics.
+- **`PartnerRepository.DeleteByDBID(ctx, id int64) error`** — used by settings deletePartnerHandler (URL uses DB numeric id, not partner_id string).
+- **`PartnerRepository.UpdateNameByDBID(ctx, id int64, name string) error`** — used by settings updatePartnerHandler.
+- **`SessionRepository.DeleteByUserID(ctx, userID int64) error`** — used by settings deleteUserHandler to invalidate active logins.
+
+### Implementations and tests
+- All new methods implemented in `internal/repository/{message,partner,session}_repository.go` with SQLite, including table-driven test coverage in the `_test.go` files (happy paths + edge cases: empty filters, unknown ids, pagination boundaries, conflict semantics).
+- Queue worker test mocks (`internal/queue/worker_test.go`) extended with the new interface methods.
+
+### Handler migration (internal/api)
+- `dashboard_handlers.go`: `metricsHandler` (counts + active partners), `messagesHandler` (paginated list), `partnersHandler` (list), `discoverPartnerHandler` (upsert) — all migrated off raw SQL.
+- `settings_handlers.go`: `listUsersHandler`, `deleteUserHandler` (+ session cleanup via `SessionRepo.DeleteByUserID`), `updatePasswordHandler` (via `UserRepo.UpdatePassword`), `listPartnersDetailedHandler`, `updatePartnerHandler` (numeric id), `deletePartnerHandler` (numeric id) — all migrated off raw SQL.
+
+### Handler shape cleanup
+- **`api.Handlers.DB *sql.DB` field removed** — no handler in the package opens or queries the DB directly anymore.
+- `cmd/fidex-node/main.go.buildHandlers` updated to drop the `DB:` wiring.
+
+### Verification (Phase 1.x)
+- `go build ./...` clean
+- `go test ./...` green (api / config / container / crypto / discovery / errors / logging / queue / repository — all 9 test packages pass)
+- Binary smoke test: boots cleanly through container init → repos initialized → workers running → file watcher monitoring → both HTTP servers bound. Structured logs intact.
+
+### Outstanding
+- Phase 2 candidates: queue worker delivery hardening, context propagation through request lifecycle, AppError standardization.
+- Future log levels via env (LEVEL=DEBUG/INFO/WARN/ERROR) — `internal/logging` still emits all levels unconditionally.
+
+## Recent Changes (2026-05-11) — Phase 1.6
 
 ## Recent Changes (2026-05-11) — Phase 1.6
 

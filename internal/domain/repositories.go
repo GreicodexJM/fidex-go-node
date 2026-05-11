@@ -78,6 +78,16 @@ type MessageRepository interface {
 	// ListByStatus retrieves all messages with the specified status
 	ListByStatus(ctx context.Context, status MessageStatus) ([]*Message, error)
 
+	// ListPaginated returns messages ordered by created_at DESC.
+	// If statusFilter is non-nil, only messages with that status are returned.
+	// total is the count of rows matching the filter (ignoring limit/offset).
+	ListPaginated(ctx context.Context, statusFilter *MessageStatus, limit, offset int) (messages []*Message, total int, err error)
+
+	// CountByStatusSince returns a per-status count of messages created at or
+	// after the given instant. Statuses with zero matches are omitted from
+	// the result map.
+	CountByStatusSince(ctx context.Context, since time.Time) (map[MessageStatus]int, error)
+
 	// UpdateStatus updates the status of a message
 	UpdateStatus(ctx context.Context, messageID string, status MessageStatus) error
 
@@ -99,11 +109,26 @@ type PartnerRepository interface {
 	// Update updates an existing trading partner
 	Update(ctx context.Context, partner *Partner) error
 
-	// Delete removes a trading partner
+	// Upsert inserts a partner or, on partner_id conflict, updates the
+	// existing row's name / jwks_url / public_key_jwks / last_key_refresh /
+	// updated_at. Used by the discovery handler.
+	Upsert(ctx context.Context, partner *Partner) error
+
+	// Delete removes a trading partner by partner_id
 	Delete(ctx context.Context, partnerID string) error
+
+	// DeleteByDBID removes a trading partner by its database numeric id.
+	// Used by the dashboard settings UI which addresses partners by row id.
+	DeleteByDBID(ctx context.Context, id int64) error
+
+	// UpdateNameByDBID renames a partner identified by its database numeric id.
+	UpdateNameByDBID(ctx context.Context, id int64, name string) error
 
 	// List retrieves all trading partners
 	List(ctx context.Context) ([]*Partner, error)
+
+	// Count returns the total number of registered partners.
+	Count(ctx context.Context) (int, error)
 }
 
 // UserRepository defines the interface for user persistence operations
@@ -137,6 +162,10 @@ type SessionRepository interface {
 
 	// Delete removes a session
 	Delete(ctx context.Context, sessionID string) error
+
+	// DeleteByUserID removes all sessions belonging to the given user.
+	// Used when the user account is deleted.
+	DeleteByUserID(ctx context.Context, userID int64) error
 
 	// DeleteExpired removes all expired sessions
 	DeleteExpired(ctx context.Context) error

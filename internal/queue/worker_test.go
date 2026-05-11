@@ -81,6 +81,44 @@ func (m *mockMessageRepository) Delete(ctx context.Context, messageID string) er
 	return nil
 }
 
+func (m *mockMessageRepository) ListPaginated(
+	ctx context.Context,
+	statusFilter *domain.MessageStatus,
+	limit, offset int,
+) ([]*domain.Message, int, error) {
+	var all []*domain.Message
+	for _, msg := range m.messages {
+		if statusFilter != nil && msg.Status != *statusFilter {
+			continue
+		}
+		all = append(all, msg)
+	}
+	total := len(all)
+	start := offset
+	if start > total {
+		start = total
+	}
+	end := start + limit
+	if end > total {
+		end = total
+	}
+	return all[start:end], total, nil
+}
+
+func (m *mockMessageRepository) CountByStatusSince(
+	ctx context.Context,
+	since time.Time,
+) (map[domain.MessageStatus]int, error) {
+	counts := map[domain.MessageStatus]int{}
+	for _, msg := range m.messages {
+		if msg.CreatedAt.Before(since) {
+			continue
+		}
+		counts[msg.Status]++
+	}
+	return counts, nil
+}
+
 type mockPartnerRepository struct {
 	partners map[string]*domain.Partner
 }
@@ -108,6 +146,38 @@ func (m *mockPartnerRepository) Update(ctx context.Context, partner *domain.Part
 func (m *mockPartnerRepository) Delete(ctx context.Context, partnerID string) error {
 	delete(m.partners, partnerID)
 	return nil
+}
+
+func (m *mockPartnerRepository) Upsert(ctx context.Context, partner *domain.Partner) error {
+	if m.partners == nil {
+		m.partners = make(map[string]*domain.Partner)
+	}
+	m.partners[partner.PartnerID] = partner
+	return nil
+}
+
+func (m *mockPartnerRepository) DeleteByDBID(ctx context.Context, id int64) error {
+	for k, p := range m.partners {
+		if p.ID == id {
+			delete(m.partners, k)
+			return nil
+		}
+	}
+	return fmt.Errorf("partner not found: id=%d", id)
+}
+
+func (m *mockPartnerRepository) UpdateNameByDBID(ctx context.Context, id int64, name string) error {
+	for _, p := range m.partners {
+		if p.ID == id {
+			p.Name = name
+			return nil
+		}
+	}
+	return fmt.Errorf("partner not found: id=%d", id)
+}
+
+func (m *mockPartnerRepository) Count(ctx context.Context) (int, error) {
+	return len(m.partners), nil
 }
 
 func (m *mockPartnerRepository) List(ctx context.Context) ([]*domain.Partner, error) {
