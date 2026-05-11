@@ -10,38 +10,84 @@ import (
 	"fidex-node/internal/crypto"
 )
 
-// AS5Configuration represents the AS5 discovery document
+// AS5Configuration is the discovery document a node publishes so partners can
+// onboard automatically. Field names and structure match
+// fidex-protocol-specification.md §6.2 exactly.
 type AS5Configuration struct {
-	Issuer                      string   `json:"issuer"`
-	OrganizationName            string   `json:"organization_name"`
-	JWKSUri                     string   `json:"jwks_uri"`
-	MessageEndpoint             string   `json:"message_endpoint"`
-	MDNReceiptEndpoint          string   `json:"mdn_receipt_endpoint"`
-	AlgorithmsSupported         []string `json:"algorithms_supported"`
-	WebhookRegistrationEndpoint string   `json:"webhook_registration_endpoint"`
+	FidexVersion           string            `json:"fidex_version"`
+	SupportedVersions      []string          `json:"supported_versions"`
+	ConformanceProfile     string            `json:"conformance_profile,omitempty"`
+	NodeID                 string            `json:"node_id"`
+	OrganizationName       string            `json:"organization_name"`
+	PublicDomain           string            `json:"public_domain"`
+	SupportedDocumentTypes []string          `json:"supported_document_types,omitempty"`
+	Endpoints              AS5Endpoints      `json:"endpoints"`
+	Security               AS5SecurityConfig `json:"security"`
 }
 
-// NodeConfig holds the node's configuration for discovery
+// AS5Endpoints groups the per-operation URLs the peer should call.
+// Each value is an absolute URL; paths MAY differ between implementations
+// (the spec leaves them implementation-defined). See spec §6.2.
+type AS5Endpoints struct {
+	ReceiveMessage string `json:"receive_message"`
+	ReceiveReceipt string `json:"receive_receipt"`
+	Register       string `json:"register"`
+	JWKS           string `json:"jwks"`
+}
+
+// AS5SecurityConfig declares the crypto algorithms this node supports.
+type AS5SecurityConfig struct {
+	SignatureAlgorithm  string `json:"signature_algorithm"`
+	EncryptionAlgorithm string `json:"encryption_algorithm"`
+	ContentEncryption   string `json:"content_encryption"`
+	MinimumKeySize      int    `json:"minimum_key_size"`
+}
+
+// NodeConfig holds the node's configuration for discovery.
+// PublicDomain feeds the public_domain field in AS5 config.
 type NodeConfig struct {
-	NodeID           string
-	OrganizationName string
-	BaseURL          string
+	NodeID                 string
+	OrganizationName       string
+	BaseURL                string
+	PublicDomain           string
+	SupportedDocumentTypes []string
 }
 
-// GenerateAS5Config creates the AS5 discovery document for this node
+// GenerateAS5Config builds this node's spec-conformant discovery document.
 func GenerateAS5Config(config NodeConfig) *AS5Configuration {
+	docTypes := config.SupportedDocumentTypes
+	if docTypes == nil {
+		docTypes = []string{}
+	}
+	publicDomain := config.PublicDomain
+	if publicDomain == "" {
+		publicDomain = config.BaseURL
+	}
+
 	return &AS5Configuration{
-		Issuer:                      config.NodeID,
-		OrganizationName:            config.OrganizationName,
-		JWKSUri:                     config.BaseURL + constants.RouteJWKS,
-		MessageEndpoint:             config.BaseURL + constants.RouteInbound,
-		MDNReceiptEndpoint:          config.BaseURL + constants.RouteReceipt,
-		AlgorithmsSupported:         []string{"RS256", "RSA-OAEP", "A256GCM"},
-		WebhookRegistrationEndpoint: config.BaseURL + constants.RouteRegister,
+		FidexVersion:           "1.0",
+		SupportedVersions:      []string{"1.0"},
+		ConformanceProfile:     "core",
+		NodeID:                 config.NodeID,
+		OrganizationName:       config.OrganizationName,
+		PublicDomain:           publicDomain,
+		SupportedDocumentTypes: docTypes,
+		Endpoints: AS5Endpoints{
+			ReceiveMessage: config.BaseURL + constants.RouteInbound,
+			ReceiveReceipt: config.BaseURL + constants.RouteReceipt,
+			Register:       config.BaseURL + constants.RouteRegister,
+			JWKS:           config.BaseURL + constants.RouteJWKS,
+		},
+		Security: AS5SecurityConfig{
+			SignatureAlgorithm:  "RS256",
+			EncryptionAlgorithm: "RSA-OAEP",
+			ContentEncryption:   "A256GCM",
+			MinimumKeySize:      2048,
+		},
 	}
 }
 
-// FetchAS5Config fetches and validates an AS5 configuration from a remote URL
+// FetchAS5Config fetches and validates an AS5 configuration from a remote URL.
 func FetchAS5Config(discoveryURL string) (*AS5Configuration, error) {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
@@ -62,7 +108,6 @@ func FetchAS5Config(discoveryURL string) (*AS5Configuration, error) {
 		return nil, fmt.Errorf("failed to parse AS5 config: %w", err)
 	}
 
-	// Validate required fields
 	if err := validateAS5Config(&config); err != nil {
 		return nil, fmt.Errorf("invalid AS5 config: %w", err)
 	}
@@ -70,19 +115,28 @@ func FetchAS5Config(discoveryURL string) (*AS5Configuration, error) {
 	return &config, nil
 }
 
-// validateAS5Config validates that all required fields are present
+// validateAS5Config ensures the required fields per spec §6.2 are present.
 func validateAS5Config(config *AS5Configuration) error {
-	if config.Issuer == "" {
-		return fmt.Errorf("issuer is required")
+	if config.NodeID == "" {
+		return fmt.Errorf("node_id is required")
 	}
-	if config.JWKSUri == "" {
-		return fmt.Errorf("jwks_uri is required")
+	if config.FidexVersion == "" {
+		return fmt.Errorf("fidex_version is required")
 	}
-	if config.MessageEndpoint == "" {
-		return fmt.Errorf("message_endpoint is required")
+	if len(config.SupportedVersions) == 0 {
+		return fmt.Errorf("supported_versions is required and must be non-empty")
 	}
-	if config.MDNReceiptEndpoint == "" {
-		return fmt.Errorf("mdn_receipt_endpoint is required")
+	if config.Endpoints.JWKS == "" {
+		return fmt.Errorf("endpoints.jwks is required")
+	}
+	if config.Endpoints.ReceiveMessage == "" {
+		return fmt.Errorf("endpoints.receive_message is required")
+	}
+	if config.Endpoints.ReceiveReceipt == "" {
+		return fmt.Errorf("endpoints.receive_receipt is required")
+	}
+	if config.Endpoints.Register == "" {
+		return fmt.Errorf("endpoints.register is required")
 	}
 	return nil
 }
@@ -103,21 +157,17 @@ func FetchAndCachePartnerKeys(jwksURL string) (string, error) {
 		return "", fmt.Errorf("failed to fetch JWKS: HTTP %d", resp.StatusCode)
 	}
 
-	// Read and validate JSON
 	var jwksData interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&jwksData); err != nil {
 		return "", fmt.Errorf("invalid JWKS JSON: %w", err)
 	}
 
-	// Re-marshal to ensure it's valid
 	jwksBytes, err := json.Marshal(jwksData)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal JWKS: %w", err)
 	}
 
-	// Validate it's parseable as a JWKS
-	_, err = crypto.ParsePublicKeyFromJWKS(string(jwksBytes))
-	if err != nil {
+	if _, err := crypto.ParsePublicKeyFromJWKS(string(jwksBytes)); err != nil {
 		return "", fmt.Errorf("invalid JWKS format: %w", err)
 	}
 

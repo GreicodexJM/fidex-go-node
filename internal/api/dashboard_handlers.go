@@ -217,21 +217,24 @@ func (h *Handlers) discoverPartnerHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	// Fetch partner's JWKS
-	jwks, err := discovery.FetchAndCachePartnerKeys(as5Config.JWKSUri)
+	jwks, err := discovery.FetchAndCachePartnerKeys(as5Config.Endpoints.JWKS)
 	if err != nil {
 		logger.Warn(ctx, "Failed to fetch partner JWKS: %v", err)
 		respondWithError(w, http.StatusBadRequest, "Failed to fetch partner keys", err)
 		return
 	}
 
-	// Save partner to database via repository upsert.
+	// Save partner to database via repository upsert. The peer's published
+	// endpoint URLs are stored so the queue worker knows where to deliver.
 	now := time.Now()
 	partner := &domain.Partner{
-		PartnerID:      as5Config.Issuer,
-		Name:           as5Config.OrganizationName,
-		JWKSUrl:        as5Config.JWKSUri,
-		PublicKeyJWKS:  jwks,
-		LastKeyRefresh: &now,
+		PartnerID:          as5Config.NodeID,
+		Name:               as5Config.OrganizationName,
+		JWKSUrl:            as5Config.Endpoints.JWKS,
+		MessageEndpoint:    as5Config.Endpoints.ReceiveMessage,
+		MDNReceiptEndpoint: as5Config.Endpoints.ReceiveReceipt,
+		PublicKeyJWKS:      jwks,
+		LastKeyRefresh:     &now,
 	}
 	if err := h.PartnerRepo.Upsert(ctx, partner); err != nil {
 		logger.Error(ctx, "Failed to save partner: %v", err)
@@ -239,10 +242,10 @@ func (h *Handlers) discoverPartnerHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	logger.Info(ctx, "Partner discovered and saved: %s (%s)", as5Config.OrganizationName, as5Config.Issuer)
+	logger.Info(ctx, "Partner discovered and saved: %s (%s)", as5Config.OrganizationName, as5Config.NodeID)
 
 	response := PartnerDiscoveryResponse{
-		PartnerID: as5Config.Issuer,
+		PartnerID: as5Config.NodeID,
 		Name:      as5Config.OrganizationName,
 		Status:    "connected",
 		Message:   "Partner successfully discovered and added",
@@ -253,7 +256,7 @@ func (h *Handlers) discoverPartnerHandler(w http.ResponseWriter, r *http.Request
 	// Broadcast partner_added event to WebSocket clients
 	if h.WebSocketHub != nil {
 		h.WebSocketHub.Broadcast("partner_added", map[string]interface{}{
-			"partner_id": as5Config.Issuer,
+			"partner_id": as5Config.NodeID,
 			"name":       as5Config.OrganizationName,
 			"status":     "connected",
 		})

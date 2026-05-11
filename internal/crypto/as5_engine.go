@@ -32,10 +32,11 @@ type RoutingHeader struct {
 	ReceiptWebhook string `json:"receipt_webhook,omitempty"`
 }
 
-// FidexEnvelope represents the complete FideX transmission
+// FidexEnvelope represents the complete FideX transmission.
+// JSON keys match the canonical protocol spec §4: routing_header + encrypted_payload.
 type FidexEnvelope struct {
-	Routing RoutingHeader `json:"routing"`
-	Payload string        `json:"payload"` // JWE string
+	Routing RoutingHeader `json:"routing_header"`
+	Payload string        `json:"encrypted_payload"` // JWE string
 }
 
 // JMDNReceipt represents a message disposition notification
