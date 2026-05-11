@@ -89,6 +89,16 @@ func (r *SQLiteSessionRepository) Delete(ctx context.Context, sessionID string) 
 	return nil
 }
 
+// DeleteByUserID removes all sessions belonging to the given user.
+// Used when the user account itself is deleted, to invalidate active logins.
+func (r *SQLiteSessionRepository) DeleteByUserID(ctx context.Context, userID int64) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, userID)
+	if err != nil {
+		return fmt.Errorf("failed to delete sessions by user_id: %w", err)
+	}
+	return nil
+}
+
 // DeleteExpired removes all expired sessions
 func (r *SQLiteSessionRepository) DeleteExpired(ctx context.Context) error {
 	_, err := r.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at < ?`, time.Now())

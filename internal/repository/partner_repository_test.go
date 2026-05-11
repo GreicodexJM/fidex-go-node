@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 	"time"
 
@@ -493,4 +494,121 @@ func TestPartnerRepository_CompleteWorkflow(t *testing.T) {
 	// Verify deletion
 	_, err = repo.GetByID(ctx, "workflow-partner")
 	assert.Error(t, err)
+}
+
+func TestPartnerRepository_Upsert(t *testing.T) {
+	db := setupPartnerTestDB(t)
+	defer db.Close()
+
+	repo := NewSQLitePartnerRepository(db)
+	ctx := context.Background()
+
+	t.Run("inserts on first call", func(t *testing.T) {
+		p := &domain.Partner{
+			PartnerID: "upsert-1",
+			Name:      "Original",
+			JWKSUrl:   "https://example.com/jwks",
+		}
+		require.NoError(t, repo.Upsert(ctx, p))
+
+		got, err := repo.GetByID(ctx, "upsert-1")
+		require.NoError(t, err)
+		assert.Equal(t, "Original", got.Name)
+	})
+
+	t.Run("updates on conflict", func(t *testing.T) {
+		// Re-upsert with same partner_id, different fields
+		p := &domain.Partner{
+			PartnerID:     "upsert-1",
+			Name:          "Renamed",
+			JWKSUrl:       "https://example.com/jwks-v2",
+			PublicKeyJWKS: "newjwks",
+		}
+		require.NoError(t, repo.Upsert(ctx, p))
+
+		got, err := repo.GetByID(ctx, "upsert-1")
+		require.NoError(t, err)
+		assert.Equal(t, "Renamed", got.Name)
+		assert.Equal(t, "https://example.com/jwks-v2", got.JWKSUrl)
+		assert.Equal(t, "newjwks", got.PublicKeyJWKS)
+	})
+
+	t.Run("rejects empty partner_id", func(t *testing.T) {
+		err := repo.Upsert(ctx, &domain.Partner{Name: "x", JWKSUrl: "y"})
+		assert.Error(t, err)
+	})
+}
+
+func TestPartnerRepository_DeleteByDBID(t *testing.T) {
+	db := setupPartnerTestDB(t)
+	defer db.Close()
+
+	repo := NewSQLitePartnerRepository(db)
+	ctx := context.Background()
+
+	p := &domain.Partner{PartnerID: "del-1", Name: "X", JWKSUrl: "https://x"}
+	require.NoError(t, repo.Create(ctx, p))
+
+	t.Run("deletes existing row", func(t *testing.T) {
+		require.NoError(t, repo.DeleteByDBID(ctx, p.ID))
+		_, err := repo.GetByID(ctx, "del-1")
+		assert.Error(t, err)
+	})
+
+	t.Run("returns error for unknown id", func(t *testing.T) {
+		err := repo.DeleteByDBID(ctx, 99999)
+		assert.Error(t, err)
+	})
+}
+
+func TestPartnerRepository_UpdateNameByDBID(t *testing.T) {
+	db := setupPartnerTestDB(t)
+	defer db.Close()
+
+	repo := NewSQLitePartnerRepository(db)
+	ctx := context.Background()
+
+	p := &domain.Partner{PartnerID: "ren-1", Name: "Before", JWKSUrl: "https://x"}
+	require.NoError(t, repo.Create(ctx, p))
+
+	t.Run("renames partner", func(t *testing.T) {
+		require.NoError(t, repo.UpdateNameByDBID(ctx, p.ID, "After"))
+		got, err := repo.GetByID(ctx, "ren-1")
+		require.NoError(t, err)
+		assert.Equal(t, "After", got.Name)
+	})
+
+	t.Run("rejects empty name", func(t *testing.T) {
+		err := repo.UpdateNameByDBID(ctx, p.ID, "")
+		assert.Error(t, err)
+	})
+
+	t.Run("errors when id absent", func(t *testing.T) {
+		err := repo.UpdateNameByDBID(ctx, 99999, "Any")
+		assert.Error(t, err)
+	})
+}
+
+func TestPartnerRepository_Count(t *testing.T) {
+	db := setupPartnerTestDB(t)
+	defer db.Close()
+
+	repo := NewSQLitePartnerRepository(db)
+	ctx := context.Background()
+
+	n, err := repo.Count(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+
+	for i := 0; i < 3; i++ {
+		require.NoError(t, repo.Create(ctx, &domain.Partner{
+			PartnerID: fmt.Sprintf("p-%d", i),
+			Name:      "N",
+			JWKSUrl:   "https://x",
+		}))
+	}
+
+	n, err = repo.Count(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 3, n)
 }

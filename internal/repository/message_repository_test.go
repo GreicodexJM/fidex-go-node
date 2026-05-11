@@ -373,6 +373,94 @@ func TestMessageRepository_Delete(t *testing.T) {
 	})
 }
 
+func TestMessageRepository_ListPaginated(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	repo := NewSQLiteMessageRepository(db)
+	ctx := context.Background()
+
+	base := time.Now()
+	// Seed: 3 queued (newest first by created_at), 2 delivered
+	seeded := []*domain.Message{
+		{MessageID: "q1", Direction: domain.DirectionOutbound, Status: domain.StatusQueued, Payload: "p", CreatedAt: base.Add(-5 * time.Minute)},
+		{MessageID: "q2", Direction: domain.DirectionOutbound, Status: domain.StatusQueued, Payload: "p", CreatedAt: base.Add(-3 * time.Minute)},
+		{MessageID: "q3", Direction: domain.DirectionOutbound, Status: domain.StatusQueued, Payload: "p", CreatedAt: base.Add(-1 * time.Minute)},
+		{MessageID: "d1", Direction: domain.DirectionInbound, Status: domain.StatusDelivered, Payload: "p", CreatedAt: base.Add(-4 * time.Minute)},
+		{MessageID: "d2", Direction: domain.DirectionInbound, Status: domain.StatusDelivered, Payload: "p", CreatedAt: base.Add(-2 * time.Minute)},
+	}
+	for _, m := range seeded {
+		require.NoError(t, repo.Create(ctx, m))
+	}
+
+	t.Run("no filter returns all ordered by created_at DESC", func(t *testing.T) {
+		msgs, total, err := repo.ListPaginated(ctx, nil, 10, 0)
+		require.NoError(t, err)
+		assert.Equal(t, 5, total)
+		require.Len(t, msgs, 5)
+		assert.Equal(t, "q3", msgs[0].MessageID)
+		assert.Equal(t, "d2", msgs[1].MessageID)
+		assert.Equal(t, "q2", msgs[2].MessageID)
+	})
+
+	t.Run("status filter restricts results", func(t *testing.T) {
+		queued := domain.StatusQueued
+		msgs, total, err := repo.ListPaginated(ctx, &queued, 10, 0)
+		require.NoError(t, err)
+		assert.Equal(t, 3, total)
+		require.Len(t, msgs, 3)
+		for _, m := range msgs {
+			assert.Equal(t, domain.StatusQueued, m.Status)
+		}
+	})
+
+	t.Run("limit + offset paginate", func(t *testing.T) {
+		msgs, total, err := repo.ListPaginated(ctx, nil, 2, 2)
+		require.NoError(t, err)
+		assert.Equal(t, 5, total)
+		require.Len(t, msgs, 2)
+		assert.Equal(t, "q2", msgs[0].MessageID)
+		assert.Equal(t, "d1", msgs[1].MessageID)
+	})
+
+	t.Run("empty result returns []*Message, not nil", func(t *testing.T) {
+		failed := domain.StatusFailed
+		msgs, total, err := repo.ListPaginated(ctx, &failed, 10, 0)
+		require.NoError(t, err)
+		assert.Equal(t, 0, total)
+		assert.NotNil(t, msgs)
+		assert.Len(t, msgs, 0)
+	})
+}
+
+func TestMessageRepository_CountByStatusSince(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	repo := NewSQLiteMessageRepository(db)
+	ctx := context.Background()
+	now := time.Now()
+
+	seeded := []*domain.Message{
+		{MessageID: "old-q", Status: domain.StatusQueued, Direction: domain.DirectionOutbound, Payload: "p", CreatedAt: now.Add(-48 * time.Hour)},
+		{MessageID: "recent-q1", Status: domain.StatusQueued, Direction: domain.DirectionOutbound, Payload: "p", CreatedAt: now.Add(-1 * time.Hour)},
+		{MessageID: "recent-q2", Status: domain.StatusQueued, Direction: domain.DirectionOutbound, Payload: "p", CreatedAt: now.Add(-30 * time.Minute)},
+		{MessageID: "recent-d", Status: domain.StatusDelivered, Direction: domain.DirectionInbound, Payload: "p", CreatedAt: now.Add(-2 * time.Hour)},
+		{MessageID: "recent-f", Status: domain.StatusFailed, Direction: domain.DirectionOutbound, Payload: "p", CreatedAt: now.Add(-15 * time.Minute)},
+	}
+	for _, m := range seeded {
+		require.NoError(t, repo.Create(ctx, m))
+	}
+
+	counts, err := repo.CountByStatusSince(ctx, now.Add(-24*time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, 2, counts[domain.StatusQueued])
+	assert.Equal(t, 1, counts[domain.StatusDelivered])
+	assert.Equal(t, 1, counts[domain.StatusFailed])
+	_, hasOld := counts[domain.StatusQueued]
+	assert.True(t, hasOld) // present
+}
+
 func TestMessageRepository_ContextCancellation(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()

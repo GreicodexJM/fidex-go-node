@@ -96,55 +96,28 @@ func (h *Handlers) qrCodeHandler(w http.ResponseWriter, r *http.Request) {
 // Returns real-time system metrics
 func (h *Handlers) metricsHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	// Calculate metrics from database
-	metrics := DashboardMetrics{
-		SystemStatus: "operational",
-	}
+	metrics := DashboardMetrics{SystemStatus: "operational"}
 
-	// Count messages in last 24 hours by status
-	cutoff := time.Now().Add(-24 * time.Hour)
-
-	rows, err := h.DB.Query(`
-		SELECT status, COUNT(*)
-		FROM messages
-		WHERE created_at >= ?
-		GROUP BY status
-	`, cutoff)
-
+	// Per-status message counts in the last 24 hours.
+	counts, err := h.MessageRepo.CountByStatusSince(ctx, time.Now().Add(-24*time.Hour))
 	if err != nil {
 		logger.Error(ctx, "Failed to query message metrics: %v", err)
 	} else {
-		defer rows.Close()
+		metrics.MessagesDelivered24h = counts[domain.StatusDelivered]
+		metrics.MessagesQueued = counts[domain.StatusQueued]
+		metrics.MessagesFailed = counts[domain.StatusFailed]
 
-		var total int
-		for rows.Next() {
-			var status string
-			var count int
-			if err := rows.Scan(&status, &count); err != nil {
-				continue
-			}
-			total += count
-
-			switch status {
-			case string(domain.StatusDelivered):
-				metrics.MessagesDelivered24h = count
-			case string(domain.StatusQueued):
-				metrics.MessagesQueued = count
-			case string(domain.StatusFailed):
-				metrics.MessagesFailed = count
-			}
-		}
-
-		// Calculate success rate
+		total := metrics.MessagesDelivered24h + metrics.MessagesQueued + metrics.MessagesFailed
 		if total > 0 {
 			metrics.SuccessRate = float64(metrics.MessagesDelivered24h) / float64(total)
 		}
 	}
 
-	// Count active partners
-	err = h.DB.QueryRow(`SELECT COUNT(*) FROM trading_partners`).Scan(&metrics.ActivePartners)
-	if err != nil {
+	// Active partner count.
+	if partnerCount, err := h.PartnerRepo.Count(ctx); err != nil {
 		logger.Error(ctx, "Failed to count partners: %v", err)
+	} else {
+		metrics.ActivePartners = partnerCount
 	}
 
 	respondWithJSON(w, http.StatusOK, metrics)
@@ -154,111 +127,61 @@ func (h *Handlers) metricsHandler(w http.ResponseWriter, r *http.Request) {
 // Returns paginated list of messages
 func (h *Handlers) messagesHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	// Parse query parameters
-	limitStr := r.URL.Query().Get("limit")
-	offsetStr := r.URL.Query().Get("offset")
-	statusFilter := r.URL.Query().Get("status")
 
 	limit := 20
 	offset := 0
-
-	if limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 100 {
-			limit = l
-		}
+	if l, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && l > 0 && l <= 100 {
+		limit = l
+	}
+	if o, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && o >= 0 {
+		offset = o
 	}
 
-	if offsetStr != "" {
-		if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
-			offset = o
-		}
+	var statusFilter *domain.MessageStatus
+	if s := r.URL.Query().Get("status"); s != "" {
+		status := domain.MessageStatus(s)
+		statusFilter = &status
 	}
 
-	// Build query
-	query := `SELECT id, message_id, direction, status, payload, created_at FROM messages`
-	countQuery := `SELECT COUNT(*) FROM messages`
-	args := []interface{}{}
-
-	if statusFilter != "" {
-		query += ` WHERE status = ?`
-		countQuery += ` WHERE status = ?`
-		args = append(args, statusFilter)
-	}
-
-	query += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
-	queryArgs := append(args, limit, offset)
-
-	// Get total count
-	var total int
-	err := h.DB.QueryRow(countQuery, args...).Scan(&total)
+	msgPtrs, total, err := h.MessageRepo.ListPaginated(ctx, statusFilter, limit, offset)
 	if err != nil {
-		logger.Error(ctx, "Failed to count messages: %v", err)
-		respondWithError(w, http.StatusInternalServerError, "Failed to count messages", err)
-		return
-	}
-
-	// Get messages
-	rows, err := h.DB.Query(query, queryArgs...)
-	if err != nil {
-		logger.Error(ctx, "Failed to query messages: %v", err)
+		logger.Error(ctx, "Failed to list messages: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to query messages", err)
 		return
 	}
-	defer rows.Close()
 
-	messages := []domain.Message{}
-	for rows.Next() {
-		var msg domain.Message
-		if err := rows.Scan(&msg.ID, &msg.MessageID, &msg.Direction, &msg.Status, &msg.Payload, &msg.CreatedAt); err != nil {
-			logger.Warn(ctx, "Failed to scan message: %v", err)
-			continue
-		}
-		messages = append(messages, msg)
+	messages := make([]domain.Message, 0, len(msgPtrs))
+	for _, m := range msgPtrs {
+		messages = append(messages, *m)
 	}
 
-	response := MessageListResponse{
+	respondWithJSON(w, http.StatusOK, MessageListResponse{
 		Messages: messages,
 		Total:    total,
 		Page:     offset/limit + 1,
 		PerPage:  limit,
-	}
-
-	respondWithJSON(w, http.StatusOK, response)
+	})
 }
 
 // partnersHandler handles GET /api/dashboard/partners
 // Returns list of trading partners
 func (h *Handlers) partnersHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	rows, err := h.DB.Query(`
-		SELECT id, partner_id, name, jwks_url, created_at
-		FROM trading_partners
-		ORDER BY created_at DESC
-	`)
+	rows, err := h.PartnerRepo.List(ctx)
 	if err != nil {
-		logger.Error(ctx, "Failed to query partners: %v", err)
+		logger.Error(ctx, "Failed to list partners: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to query partners", err)
 		return
 	}
-	defer rows.Close()
 
-	partners := []map[string]interface{}{}
-	for rows.Next() {
-		var id int64
-		var partnerID, name, jwksURL string
-		var createdAt time.Time
-
-		if err := rows.Scan(&id, &partnerID, &name, &jwksURL, &createdAt); err != nil {
-			logger.Warn(ctx, "Failed to scan partner: %v", err)
-			continue
-		}
-
+	partners := make([]map[string]interface{}, 0, len(rows))
+	for _, p := range rows {
 		partners = append(partners, map[string]interface{}{
-			"id":         id,
-			"partner_id": partnerID,
-			"name":       name,
-			"jwks_url":   jwksURL,
-			"created_at": createdAt,
+			"id":         p.ID,
+			"partner_id": p.PartnerID,
+			"name":       p.Name,
+			"jwks_url":   p.JWKSUrl,
+			"created_at": p.CreatedAt,
 			"status":     "connected",
 		})
 	}
@@ -301,19 +224,16 @@ func (h *Handlers) discoverPartnerHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Save partner to database
-	_, err = h.DB.Exec(`
-		INSERT INTO trading_partners (partner_id, name, jwks_url, public_key_jwks, last_key_refresh, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(partner_id) DO UPDATE SET
-			name = excluded.name,
-			jwks_url = excluded.jwks_url,
-			public_key_jwks = excluded.public_key_jwks,
-			last_key_refresh = excluded.last_key_refresh,
-			updated_at = excluded.updated_at
-	`, as5Config.Issuer, as5Config.OrganizationName, as5Config.JWKSUri, jwks, time.Now(), time.Now(), time.Now())
-
-	if err != nil {
+	// Save partner to database via repository upsert.
+	now := time.Now()
+	partner := &domain.Partner{
+		PartnerID:      as5Config.Issuer,
+		Name:           as5Config.OrganizationName,
+		JWKSUrl:        as5Config.JWKSUri,
+		PublicKeyJWKS:  jwks,
+		LastKeyRefresh: &now,
+	}
+	if err := h.PartnerRepo.Upsert(ctx, partner); err != nil {
 		logger.Error(ctx, "Failed to save partner: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to save partner", err)
 		return

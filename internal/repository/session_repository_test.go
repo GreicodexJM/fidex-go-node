@@ -347,3 +347,35 @@ func TestSessionRepository_ExpirationEdgeCases(t *testing.T) {
 		assert.Equal(t, "future-session", retrieved.SessionID)
 	})
 }
+
+func TestSessionRepository_DeleteByUserID(t *testing.T) {
+	db := setupSessionTestDB(t)
+	defer db.Close()
+
+	repo := NewSQLiteSessionRepository(db)
+	ctx := context.Background()
+
+	// Two sessions for user 42, one for user 7.
+	for _, s := range []*domain.Session{
+		{SessionID: "user42-a", UserID: 42, ExpiresAt: time.Now().Add(time.Hour)},
+		{SessionID: "user42-b", UserID: 42, ExpiresAt: time.Now().Add(time.Hour)},
+		{SessionID: "user7-a", UserID: 7, ExpiresAt: time.Now().Add(time.Hour)},
+	} {
+		require.NoError(t, repo.Create(ctx, s))
+	}
+
+	require.NoError(t, repo.DeleteByUserID(ctx, 42))
+
+	_, err := repo.GetByID(ctx, "user42-a")
+	assert.Error(t, err)
+	_, err = repo.GetByID(ctx, "user42-b")
+	assert.Error(t, err)
+
+	// Unrelated user untouched.
+	got, err := repo.GetByID(ctx, "user7-a")
+	require.NoError(t, err)
+	assert.Equal(t, int64(7), got.UserID)
+
+	// Deleting for a user with no sessions should be a no-op, not an error.
+	require.NoError(t, repo.DeleteByUserID(ctx, 999))
+}
