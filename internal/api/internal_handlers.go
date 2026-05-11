@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"time"
 
@@ -14,19 +13,19 @@ import (
 // transmitHandler handles POST /api/v1/transmit
 // Accepts a raw JSON payload from the local ERP, wraps it in the FideX envelope, and queues it
 func (h *Handlers) transmitHandler(w http.ResponseWriter, r *http.Request) {
-	log.Printf("Received transmit request from %s", r.RemoteAddr)
+	logger.Info(r.Context(), "Received transmit request from %s", r.RemoteAddr)
 
 	// Parse the request body
 	var req TransmitRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("Failed to decode transmit request: %v", err)
+		logger.Warn(r.Context(), "Failed to decode transmit request: %v", err)
 		respondWithError(w, http.StatusBadRequest, "Invalid JSON in request body", err)
 		return
 	}
 
 	// Validate the request
 	if err := validateTransmitRequest(&req); err != nil {
-		log.Printf("Transmit request validation failed: %v", err)
+		logger.Warn(r.Context(), "Transmit request validation failed: %v", err)
 		respondWithError(w, http.StatusBadRequest, "Validation failed", err)
 		return
 	}
@@ -37,7 +36,7 @@ func (h *Handlers) transmitHandler(w http.ResponseWriter, r *http.Request) {
 	// Convert the entire request back to JSON to store as payload
 	payloadBytes, err := json.Marshal(req)
 	if err != nil {
-		log.Printf("Failed to marshal payload: %v", err)
+		logger.Error(r.Context(), "Failed to marshal payload: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to process payload", err)
 		return
 	}
@@ -53,12 +52,12 @@ func (h *Handlers) transmitHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Save via repository
 	if err := h.MessageRepo.Create(r.Context(), msg); err != nil {
-		log.Printf("Failed to insert message: %v", err)
+		logger.Error(r.Context(), "Failed to insert message: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to queue message", err)
 		return
 	}
 
-	log.Printf("Message queued successfully: %s", messageID)
+	logger.Info(r.Context(), "Message queued successfully: %s", messageID)
 
 	// Return success response
 	response := TransmitResponse{

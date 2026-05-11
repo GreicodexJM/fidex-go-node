@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"os"
 
@@ -62,8 +61,9 @@ type UpdatePartnerRequest struct {
 // getConfigHandler handles GET /api/settings/config
 // Returns the current node configuration (read-only, externalized from DB)
 func (h *Handlers) getConfigHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	if h.Config == nil {
-		log.Printf("Node config not initialized")
+		logger.Error(ctx, "Node config not initialized")
 		respondWithError(w, http.StatusInternalServerError, "Configuration not available", nil)
 		return
 	}
@@ -92,37 +92,38 @@ func (h *Handlers) getConfigHandler(w http.ResponseWriter, r *http.Request) {
 // rotateKeysHandler handles POST /api/settings/rotate-keys
 // Generates new RSA key pair and saves to file system
 func (h *Handlers) rotateKeysHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	if h.Config == nil {
-		log.Printf("Node config not initialized")
+		logger.Error(ctx, "Node config not initialized")
 		respondWithError(w, http.StatusInternalServerError, "Configuration not available", nil)
 		return
 	}
 
-	log.Println("Generating new RSA key pair...")
+	logger.Info(ctx, "Generating new RSA key pair...")
 
 	// Generate new key pair
 	privateKeyPEM, publicKeyPEM, err := crypto.GenerateKeyPair()
 	if err != nil {
-		log.Printf("Failed to generate key pair: %v", err)
+		logger.Error(ctx, "Failed to generate key pair: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to generate keys", err)
 		return
 	}
 
 	// Save private key to file
 	if err := os.WriteFile(h.Config.PrivateKeyPath, []byte(privateKeyPEM), 0600); err != nil {
-		log.Printf("Failed to save private key: %v", err)
+		logger.Error(ctx, "Failed to save private key: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to save private key", err)
 		return
 	}
 
 	// Save public key to file
 	if err := os.WriteFile(h.Config.PublicKeyPath, []byte(publicKeyPEM), 0644); err != nil {
-		log.Printf("Failed to save public key: %v", err)
+		logger.Error(ctx, "Failed to save public key: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to save public key", err)
 		return
 	}
 
-	log.Println("RSA key pair rotated successfully")
+	logger.Info(ctx, "RSA key pair rotated successfully")
 
 	respondWithJSON(w, http.StatusOK, map[string]interface{}{
 		"success":    true,
@@ -133,9 +134,10 @@ func (h *Handlers) rotateKeysHandler(w http.ResponseWriter, r *http.Request) {
 
 // listUsersHandler handles GET /api/settings/users
 func (h *Handlers) listUsersHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	rows, err := h.DB.Query(`SELECT id, username, created_at FROM users ORDER BY created_at DESC`)
 	if err != nil {
-		log.Printf("Failed to query users: %v", err)
+		logger.Error(ctx, "Failed to query users: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to load users", err)
 		return
 	}
@@ -145,7 +147,7 @@ func (h *Handlers) listUsersHandler(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var user UserResponse
 		if err := rows.Scan(&user.ID, &user.Username, &user.CreatedAt); err != nil {
-			log.Printf("Failed to scan user: %v", err)
+			logger.Warn(ctx, "Failed to scan user: %v", err)
 			continue
 		}
 		users = append(users, user)
@@ -158,6 +160,7 @@ func (h *Handlers) listUsersHandler(w http.ResponseWriter, r *http.Request) {
 
 // createUserHandler handles POST /api/settings/users
 func (h *Handlers) createUserHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	var req CreateUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondWithError(w, http.StatusBadRequest, "Invalid request body", err)
@@ -172,20 +175,20 @@ func (h *Handlers) createUserHandler(w http.ResponseWriter, r *http.Request) {
 	// Hash password
 	hashedPassword, err := auth.HashPassword(req.Password)
 	if err != nil {
-		log.Printf("Failed to hash password: %v", err)
+		logger.Error(ctx, "Failed to hash password: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to create user", err)
 		return
 	}
 
 	// Create user
-	user, err := h.AuthService.CreateUser(r.Context(), req.Username, hashedPassword)
+	user, err := h.AuthService.CreateUser(ctx, req.Username, hashedPassword)
 	if err != nil {
-		log.Printf("Failed to create user: %v", err)
+		logger.Error(ctx, "Failed to create user: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to create user (username may already exist)", err)
 		return
 	}
 
-	log.Printf("User created successfully: %s", req.Username)
+	logger.Info(ctx, "User created successfully: %s", req.Username)
 
 	respondWithJSON(w, http.StatusCreated, map[string]interface{}{
 		"success": true,
@@ -199,10 +202,11 @@ func (h *Handlers) createUserHandler(w http.ResponseWriter, r *http.Request) {
 
 // deleteUserHandler handles DELETE /api/settings/users/:id
 func (h *Handlers) deleteUserHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	userID := chi.URLParam(r, "id")
 
 	// Don't allow deleting yourself
-	currentUser, ok := auth.GetUserFromContext(r.Context())
+	currentUser, ok := auth.GetUserFromContext(ctx)
 	if ok && currentUser.ID == parseInt64(userID) {
 		respondWithError(w, http.StatusBadRequest, "Cannot delete your own account", nil)
 		return
@@ -211,7 +215,7 @@ func (h *Handlers) deleteUserHandler(w http.ResponseWriter, r *http.Request) {
 	// Delete user
 	_, err := h.DB.Exec(`DELETE FROM users WHERE id = ?`, userID)
 	if err != nil {
-		log.Printf("Failed to delete user: %v", err)
+		logger.Error(ctx, "Failed to delete user: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to delete user", err)
 		return
 	}
@@ -219,10 +223,10 @@ func (h *Handlers) deleteUserHandler(w http.ResponseWriter, r *http.Request) {
 	// Delete user's sessions
 	_, err = h.DB.Exec(`DELETE FROM sessions WHERE user_id = ?`, userID)
 	if err != nil {
-		log.Printf("Failed to delete user sessions: %v", err)
+		logger.Warn(ctx, "Failed to delete user sessions: %v", err)
 	}
 
-	log.Printf("User deleted: %s", userID)
+	logger.Info(ctx, "User deleted: %s", userID)
 
 	respondWithJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
@@ -232,6 +236,7 @@ func (h *Handlers) deleteUserHandler(w http.ResponseWriter, r *http.Request) {
 
 // updatePasswordHandler handles PUT /api/settings/password
 func (h *Handlers) updatePasswordHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	var req UpdateUserPasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondWithError(w, http.StatusBadRequest, "Invalid request body", err)
@@ -239,7 +244,7 @@ func (h *Handlers) updatePasswordHandler(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Get current user
-	currentUser, ok := auth.GetUserFromContext(r.Context())
+	currentUser, ok := auth.GetUserFromContext(ctx)
 	if !ok {
 		respondWithError(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
@@ -254,7 +259,7 @@ func (h *Handlers) updatePasswordHandler(w http.ResponseWriter, r *http.Request)
 	// Hash new password
 	newHash, err := auth.HashPassword(req.NewPassword)
 	if err != nil {
-		log.Printf("Failed to hash password: %v", err)
+		logger.Error(ctx, "Failed to hash password: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to update password", err)
 		return
 	}
@@ -262,12 +267,12 @@ func (h *Handlers) updatePasswordHandler(w http.ResponseWriter, r *http.Request)
 	// Update password
 	_, err = h.DB.Exec(`UPDATE users SET password_hash = ? WHERE id = ?`, newHash, currentUser.ID)
 	if err != nil {
-		log.Printf("Failed to update password: %v", err)
+		logger.Error(ctx, "Failed to update password: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to update password", err)
 		return
 	}
 
-	log.Printf("Password updated for user: %s", currentUser.Username)
+	logger.Info(ctx, "Password updated for user: %s", currentUser.Username)
 
 	respondWithJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
@@ -277,13 +282,14 @@ func (h *Handlers) updatePasswordHandler(w http.ResponseWriter, r *http.Request)
 
 // listPartnersDetailedHandler handles GET /api/settings/partners
 func (h *Handlers) listPartnersDetailedHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	rows, err := h.DB.Query(`
 		SELECT id, partner_id, name, jwks_url, last_key_refresh, created_at
 		FROM trading_partners
 		ORDER BY created_at DESC
 	`)
 	if err != nil {
-		log.Printf("Failed to query partners: %v", err)
+		logger.Error(ctx, "Failed to query partners: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to load partners", err)
 		return
 	}
@@ -295,7 +301,7 @@ func (h *Handlers) listPartnersDetailedHandler(w http.ResponseWriter, r *http.Re
 		var lastRefresh, createdAt interface{}
 
 		if err := rows.Scan(&partner.ID, &partner.PartnerID, &partner.Name, &partner.JWKSUrl, &lastRefresh, &createdAt); err != nil {
-			log.Printf("Failed to scan partner: %v", err)
+			logger.Warn(ctx, "Failed to scan partner: %v", err)
 			continue
 		}
 
@@ -316,6 +322,7 @@ func (h *Handlers) listPartnersDetailedHandler(w http.ResponseWriter, r *http.Re
 
 // updatePartnerHandler handles PUT /api/settings/partners/:id
 func (h *Handlers) updatePartnerHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	partnerID := chi.URLParam(r, "id")
 
 	var req UpdatePartnerRequest
@@ -327,12 +334,12 @@ func (h *Handlers) updatePartnerHandler(w http.ResponseWriter, r *http.Request) 
 	// Update partner name
 	_, err := h.DB.Exec(`UPDATE trading_partners SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, req.Name, partnerID)
 	if err != nil {
-		log.Printf("Failed to update partner: %v", err)
+		logger.Error(ctx, "Failed to update partner: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to update partner", err)
 		return
 	}
 
-	log.Printf("Partner updated: %s", partnerID)
+	logger.Info(ctx, "Partner updated: %s", partnerID)
 
 	respondWithJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
@@ -342,17 +349,18 @@ func (h *Handlers) updatePartnerHandler(w http.ResponseWriter, r *http.Request) 
 
 // deletePartnerHandler handles DELETE /api/settings/partners/:id
 func (h *Handlers) deletePartnerHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	partnerID := chi.URLParam(r, "id")
 
 	// Delete partner
 	_, err := h.DB.Exec(`DELETE FROM trading_partners WHERE id = ?`, partnerID)
 	if err != nil {
-		log.Printf("Failed to delete partner: %v", err)
+		logger.Error(ctx, "Failed to delete partner: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to delete partner", err)
 		return
 	}
 
-	log.Printf("Partner deleted: %s", partnerID)
+	logger.Info(ctx, "Partner deleted: %s", partnerID)
 
 	respondWithJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,

@@ -2,9 +2,13 @@ package auth
 
 import (
 	"context"
-	"log"
 	"net/http"
+
+	"fidex-node/internal/logging"
 )
+
+// logger is the package-level structured logger for auth.
+var logger = logging.New("auth")
 
 // contextKey is a custom type for context keys to avoid collisions
 type contextKey string
@@ -19,16 +23,17 @@ const (
 // RequireAuth middleware checks for a valid session and redirects to /login on failure.
 func (s *Service) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		cookie, err := r.Cookie(SessionCookieName)
 		if err != nil {
-			log.Printf("No session cookie: %v", err)
+			logger.Debug(ctx, "No session cookie: %v", err)
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
 
-		session, err := s.GetSession(r.Context(), cookie.Value)
+		session, err := s.GetSession(ctx, cookie.Value)
 		if err != nil {
-			log.Printf("Invalid session: %v", err)
+			logger.Warn(ctx, "Invalid session: %v", err)
 			http.SetCookie(w, &http.Cookie{
 				Name:   SessionCookieName,
 				Value:  "",
@@ -39,14 +44,17 @@ func (s *Service) RequireAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		user, err := s.GetUserByID(r.Context(), session.UserID)
+		user, err := s.GetUserByID(ctx, session.UserID)
 		if err != nil {
-			log.Printf("User not found: %v", err)
+			logger.Warn(ctx, "User not found: %v", err)
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), UserContextKey, user)
+		// Propagate the authenticated user id into context so downstream
+		// loggers can attach it automatically.
+		ctx = logging.WithUserID(ctx, user.ID)
+		ctx = context.WithValue(ctx, UserContextKey, user)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -54,25 +62,27 @@ func (s *Service) RequireAuth(next http.Handler) http.Handler {
 // RequireAuthAPI middleware checks for a valid session and returns JSON 401 on failure.
 func (s *Service) RequireAuthAPI(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		cookie, err := r.Cookie(SessionCookieName)
 		if err != nil {
 			writeUnauthorized(w, "no valid session")
 			return
 		}
 
-		session, err := s.GetSession(r.Context(), cookie.Value)
+		session, err := s.GetSession(ctx, cookie.Value)
 		if err != nil {
 			writeUnauthorized(w, "invalid session")
 			return
 		}
 
-		user, err := s.GetUserByID(r.Context(), session.UserID)
+		user, err := s.GetUserByID(ctx, session.UserID)
 		if err != nil {
 			writeUnauthorized(w, "user not found")
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), UserContextKey, user)
+		ctx = logging.WithUserID(ctx, user.ID)
+		ctx = context.WithValue(ctx, UserContextKey, user)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

@@ -1,8 +1,8 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
-	"log"
 	"net/http"
 
 	"fidex-node/internal/errors"
@@ -34,7 +34,7 @@ func RespondJSON(w http.ResponseWriter, statusCode int, data interface{}) {
 	}
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("ERROR: Failed to encode JSON response: %v", err)
+		logger.Error(context.Background(), "Failed to encode JSON response: %v", err)
 	}
 }
 
@@ -82,14 +82,14 @@ func RespondAppError(w http.ResponseWriter, appErr *errors.AppError) {
 	}
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("ERROR: Failed to encode error response: %v", err)
+		logger.Error(context.Background(), "Failed to encode error response: %v", err)
 	}
 
 	// Log the underlying error (not exposed to client)
 	if appErr.Err != nil {
-		log.Printf("ERROR [%s]: %s (underlying: %v)", appErr.Code, appErr.Message, appErr.Err)
+		logger.Error(context.Background(), "[%s]: %s (underlying: %v)", appErr.Code, appErr.Message, appErr.Err)
 	} else {
-		log.Printf("ERROR [%s]: %s", appErr.Code, appErr.Message)
+		logger.Error(context.Background(), "[%s]: %s", appErr.Code, appErr.Message)
 	}
 }
 

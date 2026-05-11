@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 
 	"fidex-node/internal/discovery"
@@ -12,7 +11,7 @@ import (
 // Returns the node's AS5 discovery document
 func (h *Handlers) as5ConfigHandler(w http.ResponseWriter, r *http.Request) {
 	if h.Config == nil {
-		log.Printf("Node config not initialized")
+		logger.Error(r.Context(), "Node config not initialized")
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -29,7 +28,7 @@ func (h *Handlers) as5ConfigHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(as5Config)
 
-	log.Printf("AS5 configuration requested from %s", r.RemoteAddr)
+	logger.Info(r.Context(), "AS5 configuration requested from %s", r.RemoteAddr)
 }
 
 // webhookRegistrationHandler handles POST /as5/onboarding/webhook
@@ -40,24 +39,24 @@ func (h *Handlers) webhookRegistrationHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	log.Printf("Received webhook registration request from %s", r.RemoteAddr)
+	logger.Info(r.Context(), "Received webhook registration request from %s", r.RemoteAddr)
 
 	var req discovery.RegistrationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("Failed to decode registration request: %v", err)
+		logger.Warn(r.Context(), "Failed to decode registration request: %v", err)
 		respondWithJSONError(w, http.StatusBadRequest, "Invalid JSON in request body")
 		return
 	}
 
 	if h.DiscoveryService == nil {
-		log.Printf("Discovery service not initialized")
+		logger.Error(r.Context(), "Discovery service not initialized")
 		respondWithJSONError(w, http.StatusInternalServerError, "Service not available")
 		return
 	}
 
 	// Process the registration
 	if err := h.DiscoveryService.HandleWebhookRegistration(r.Context(), req); err != nil {
-		log.Printf("Failed to process registration: %v", err)
+		logger.Warn(r.Context(), "Failed to process registration: %v", err)
 		respondWithJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -72,7 +71,7 @@ func (h *Handlers) webhookRegistrationHandler(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(response)
 
-	log.Printf("Partner registration successful: %s", req.OrganizationName)
+	logger.Info(r.Context(), "Partner registration successful: %s", req.OrganizationName)
 }
 
 // respondWithJSONError sends a JSON error response

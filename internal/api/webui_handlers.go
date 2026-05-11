@@ -2,7 +2,6 @@ package api
 
 import (
 	"io/ioutil"
-	"log"
 	"net/http"
 )
 
@@ -13,7 +12,7 @@ import (
 func serveLoginHandler(w http.ResponseWriter, r *http.Request) {
 	data, err := ioutil.ReadFile("ui/login.html")
 	if err != nil {
-		log.Printf("Failed to read login.html: %v", err)
+		logger.Error(r.Context(), "Failed to read login.html: %v", err)
 		http.Error(w, "Login page not found", http.StatusNotFound)
 		return
 	}
@@ -27,7 +26,7 @@ func serveLoginHandler(w http.ResponseWriter, r *http.Request) {
 func serveDashboardHandler(w http.ResponseWriter, r *http.Request) {
 	data, err := ioutil.ReadFile("ui/dist/index.html")
 	if err != nil {
-		log.Printf("Failed to read dashboard: %v", err)
+		logger.Error(r.Context(), "Failed to read dashboard: %v", err)
 		http.Error(w, "Dashboard not found", http.StatusNotFound)
 		return
 	}

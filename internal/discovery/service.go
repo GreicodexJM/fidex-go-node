@@ -5,12 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"time"
 
 	"fidex-node/internal/domain"
+	"fidex-node/internal/logging"
 )
+
+// logger is the package-level structured logger for discovery.
+var logger = logging.New("discovery")
 
 // RegistrationRequest represents the payload sent to partner webhook registration endpoint
 type RegistrationRequest struct {
@@ -49,23 +52,23 @@ func NewDiscoveryService(nodeConfig NodeConfig, tokenStore *TokenStore, partnerR
 // InitiatePartnerHandshake performs the complete 4-step discovery process
 func (ds *DiscoveryService) InitiatePartnerHandshake(ctx context.Context, discoveryURL string) (*domain.Partner, error) {
 	// Step 1: Fetch AS5 configuration from remote node
-	log.Printf("Step 1: Fetching AS5 configuration from %s", discoveryURL)
+	logger.Info(ctx, "Step 1: Fetching AS5 configuration from %s", discoveryURL)
 	remoteConfig, err := FetchAS5Config(discoveryURL)
 	if err != nil {
 		return nil, fmt.Errorf("step 1 failed - could not fetch AS5 config: %w", err)
 	}
-	log.Printf("Step 1 complete: Retrieved config from %s", remoteConfig.OrganizationName)
+	logger.Info(ctx, "Step 1 complete: Retrieved config from %s", remoteConfig.OrganizationName)
 
 	// Step 2: Fetch and cache partner's public keys
-	log.Printf("Step 2: Fetching partner JWKS from %s", remoteConfig.JWKSUri)
+	logger.Info(ctx, "Step 2: Fetching partner JWKS from %s", remoteConfig.JWKSUri)
 	jwksData, err := FetchAndCachePartnerKeys(remoteConfig.JWKSUri)
 	if err != nil {
 		return nil, fmt.Errorf("step 2 failed - could not fetch JWKS: %w", err)
 	}
-	log.Printf("Step 2 complete: Cached partner's public keys")
+	logger.Info(ctx, "Step 2 complete: Cached partner's public keys")
 
 	// Step 3: Generate security token and send registration request
-	log.Printf("Step 3: Registering with partner via %s", remoteConfig.WebhookRegistrationEndpoint)
+	logger.Info(ctx, "Step 3: Registering with partner via %s", remoteConfig.WebhookRegistrationEndpoint)
 	token, err := ds.tokenStore.GenerateToken(30 * time.Minute)
 	if err != nil {
 		return nil, fmt.Errorf("step 3 failed - could not generate token: %w", err)
@@ -86,10 +89,10 @@ func (ds *DiscoveryService) InitiatePartnerHandshake(ctx context.Context, discov
 	if err := ds.sendRegistrationRequest(remoteConfig.WebhookRegistrationEndpoint, regRequest); err != nil {
 		return nil, fmt.Errorf("step 3 failed - registration rejected: %w", err)
 	}
-	log.Printf("Step 3 complete: Registration accepted by partner")
+	logger.Info(ctx, "Step 3 complete: Registration accepted by partner")
 
 	// Step 4: Create partner profile in local database
-	log.Printf("Step 4: Creating partner profile in database")
+	logger.Info(ctx, "Step 4: Creating partner profile in database")
 	now := time.Now()
 	partner := &domain.Partner{
 		PartnerID:          remoteConfig.Issuer,
@@ -104,9 +107,9 @@ func (ds *DiscoveryService) InitiatePartnerHandshake(ctx context.Context, discov
 	if err := ds.partnerRepo.Create(ctx, partner); err != nil {
 		return nil, fmt.Errorf("step 4 failed - could not create partner: %w", err)
 	}
-	log.Printf("Step 4 complete: Partner profile created for %s", partner.Name)
+	logger.Info(ctx, "Step 4 complete: Partner profile created for %s", partner.Name)
 
-	log.Printf("✓ Handshake complete with %s", partner.Name)
+	logger.Info(ctx, "✓ Handshake complete with %s", partner.Name)
 	return partner, nil
 }
 
@@ -181,13 +184,13 @@ func (ds *DiscoveryService) HandleWebhookRegistration(ctx context.Context, req R
 		if err := ds.partnerRepo.Update(ctx, partner); err != nil {
 			return fmt.Errorf("failed to update partner: %w", err)
 		}
-		log.Printf("Updated existing partner: %s", partner.Name)
+		logger.Info(ctx, "Updated existing partner: %s", partner.Name)
 	} else {
 		// Create new partner
 		if err := ds.partnerRepo.Create(ctx, partner); err != nil {
 			return fmt.Errorf("failed to create partner: %w", err)
 		}
-		log.Printf("Created new partner: %s", partner.Name)
+		logger.Info(ctx, "Created new partner: %s", partner.Name)
 	}
 
 	return nil

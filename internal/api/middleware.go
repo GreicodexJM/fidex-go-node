@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -16,11 +15,11 @@ func IPAllowlistMiddleware(allowedIPs []string) func(next http.Handler) http.Han
 			// Get the client IP
 			clientIP := getClientIP(r)
 
-			log.Printf("IP Allowlist Check: Client IP=%s", clientIP)
+			logger.Debug(r.Context(), "IP Allowlist Check: Client IP=%s", clientIP)
 
 			// Check if IP is in the allowlist
 			if !isIPAllowed(clientIP, allowedIPs) {
-				log.Printf("Access denied: IP %s not in allowlist", clientIP)
+				logger.Warn(r.Context(), "Access denied: IP %s not in allowlist", clientIP)
 				respondWithError(w, http.StatusForbidden, "Access denied", fmt.Errorf("IP address not authorized"))
 				return
 			}
@@ -39,14 +38,14 @@ func APIKeyMiddleware(expectedKey string) func(next http.Handler) http.Handler {
 			authHeader := r.Header.Get("Authorization")
 
 			if authHeader == "" {
-				log.Printf("Access denied: Missing Authorization header from %s", r.RemoteAddr)
+				logger.Warn(r.Context(), "Access denied: Missing Authorization header from %s", r.RemoteAddr)
 				respondWithError(w, http.StatusUnauthorized, "Unauthorized", fmt.Errorf("missing authorization header"))
 				return
 			}
 
 			// Check if it's a Bearer token
 			if !strings.HasPrefix(authHeader, "Bearer ") {
-				log.Printf("Access denied: Invalid authorization format from %s", r.RemoteAddr)
+				logger.Warn(r.Context(), "Access denied: Invalid authorization format from %s", r.RemoteAddr)
 				respondWithError(w, http.StatusUnauthorized, "Unauthorized", fmt.Errorf("invalid authorization format"))
 				return
 			}
@@ -56,7 +55,7 @@ func APIKeyMiddleware(expectedKey string) func(next http.Handler) http.Handler {
 
 			// Validate the token
 			if token != expectedKey {
-				log.Printf("Access denied: Invalid API key from %s", r.RemoteAddr)
+				logger.Warn(r.Context(), "Access denied: Invalid API key from %s", r.RemoteAddr)
 				respondWithError(w, http.StatusUnauthorized, "Unauthorized", fmt.Errorf("invalid API key"))
 				return
 			}
@@ -102,7 +101,7 @@ func isIPAllowed(clientIP string, allowedIPs []string) bool {
 	// Parse the client IP
 	parsedClientIP := net.ParseIP(clientIP)
 	if parsedClientIP == nil {
-		log.Printf("Warning: Could not parse client IP: %s", clientIP)
+		logger.Warn(nil, "Could not parse client IP: %s", clientIP)
 		return false
 	}
 
@@ -112,7 +111,7 @@ func isIPAllowed(clientIP string, allowedIPs []string) bool {
 		if strings.Contains(allowedIP, "/") {
 			_, ipNet, err := net.ParseCIDR(allowedIP)
 			if err != nil {
-				log.Printf("Warning: Invalid CIDR notation in allowlist: %s", allowedIP)
+				logger.Warn(nil, "Invalid CIDR notation in allowlist: %s", allowedIP)
 				continue
 			}
 			if ipNet.Contains(parsedClientIP) {
@@ -122,7 +121,7 @@ func isIPAllowed(clientIP string, allowedIPs []string) bool {
 			// Direct IP comparison
 			parsedAllowedIP := net.ParseIP(allowedIP)
 			if parsedAllowedIP == nil {
-				log.Printf("Warning: Invalid IP in allowlist: %s", allowedIP)
+				logger.Warn(nil, "Invalid IP in allowlist: %s", allowedIP)
 				continue
 			}
 			if parsedClientIP.Equal(parsedAllowedIP) {

@@ -1,13 +1,18 @@
 package dashboard
 
 import (
+	"context"
 	"encoding/json"
-	"log"
 	"sync"
 	"time"
 
+	"fidex-node/internal/logging"
+
 	"github.com/gorilla/websocket"
 )
+
+// logger is the package-level structured logger for the dashboard hub.
+var logger = logging.New("dashboard")
 
 // Hub maintains the set of active clients and broadcasts messages to them
 type Hub struct {
@@ -65,14 +70,14 @@ func (h *Hub) Run() {
 			h.mu.Lock()
 			h.clients[client] = true
 			h.mu.Unlock()
-			log.Printf("WebSocket client connected: %s (total: %d)", client.id, len(h.clients))
+			logger.Info(context.Background(), "WebSocket client connected: %s (total: %d)", client.id, len(h.clients))
 
 		case client := <-h.unregister:
 			h.mu.Lock()
 			if _, ok := h.clients[client]; ok {
 				delete(h.clients, client)
 				close(client.send)
-				log.Printf("WebSocket client disconnected: %s (total: %d)", client.id, len(h.clients))
+				logger.Info(context.Background(), "WebSocket client disconnected: %s (total: %d)", client.id, len(h.clients))
 			}
 			h.mu.Unlock()
 
@@ -151,14 +156,14 @@ func (c *Client) readPump() {
 		_, message, err := c.conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("WebSocket error: %v", err)
+				logger.Warn(context.Background(), "WebSocket error: %v", err)
 			}
 			break
 		}
 
 		// For now, we just log client messages
 		// In the future, clients could send commands like "subscribe to partner X"
-		log.Printf("Received from client %s: %s", c.id, message)
+		logger.Debug(context.Background(), "Received from client %s: %s", c.id, message)
 	}
 }
 

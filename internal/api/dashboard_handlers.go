@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -61,6 +60,7 @@ type PartnerDiscoveryResponse struct {
 // qrCodeHandler handles GET /api/dashboard/qr
 // Generates and returns a QR code PNG containing the node's discovery URL
 func (h *Handlers) qrCodeHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	// Get size parameter (optional)
 	sizeStr := r.URL.Query().Get("size")
 	size := 256 // Default
@@ -77,7 +77,7 @@ func (h *Handlers) qrCodeHandler(w http.ResponseWriter, r *http.Request) {
 	// Generate QR code
 	pngBytes, err := dashboard.GenerateQRCode(discoveryURL, size)
 	if err != nil {
-		log.Printf("Failed to generate QR code: %v", err)
+		logger.Error(ctx, "Failed to generate QR code: %v", err)
 		http.Error(w, "Failed to generate QR code", http.StatusInternalServerError)
 		return
 	}
@@ -89,12 +89,13 @@ func (h *Handlers) qrCodeHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write(pngBytes)
 
-	log.Printf("QR code generated and served to %s", r.RemoteAddr)
+	logger.Info(ctx, "QR code generated and served to %s", r.RemoteAddr)
 }
 
 // metricsHandler handles GET /api/dashboard/metrics
 // Returns real-time system metrics
 func (h *Handlers) metricsHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	// Calculate metrics from database
 	metrics := DashboardMetrics{
 		SystemStatus: "operational",
@@ -111,7 +112,7 @@ func (h *Handlers) metricsHandler(w http.ResponseWriter, r *http.Request) {
 	`, cutoff)
 
 	if err != nil {
-		log.Printf("Failed to query message metrics: %v", err)
+		logger.Error(ctx, "Failed to query message metrics: %v", err)
 	} else {
 		defer rows.Close()
 
@@ -143,7 +144,7 @@ func (h *Handlers) metricsHandler(w http.ResponseWriter, r *http.Request) {
 	// Count active partners
 	err = h.DB.QueryRow(`SELECT COUNT(*) FROM trading_partners`).Scan(&metrics.ActivePartners)
 	if err != nil {
-		log.Printf("Failed to count partners: %v", err)
+		logger.Error(ctx, "Failed to count partners: %v", err)
 	}
 
 	respondWithJSON(w, http.StatusOK, metrics)
@@ -152,6 +153,7 @@ func (h *Handlers) metricsHandler(w http.ResponseWriter, r *http.Request) {
 // messagesHandler handles GET /api/dashboard/messages
 // Returns paginated list of messages
 func (h *Handlers) messagesHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	// Parse query parameters
 	limitStr := r.URL.Query().Get("limit")
 	offsetStr := r.URL.Query().Get("offset")
@@ -190,7 +192,7 @@ func (h *Handlers) messagesHandler(w http.ResponseWriter, r *http.Request) {
 	var total int
 	err := h.DB.QueryRow(countQuery, args...).Scan(&total)
 	if err != nil {
-		log.Printf("Failed to count messages: %v", err)
+		logger.Error(ctx, "Failed to count messages: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to count messages", err)
 		return
 	}
@@ -198,7 +200,7 @@ func (h *Handlers) messagesHandler(w http.ResponseWriter, r *http.Request) {
 	// Get messages
 	rows, err := h.DB.Query(query, queryArgs...)
 	if err != nil {
-		log.Printf("Failed to query messages: %v", err)
+		logger.Error(ctx, "Failed to query messages: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to query messages", err)
 		return
 	}
@@ -208,7 +210,7 @@ func (h *Handlers) messagesHandler(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var msg domain.Message
 		if err := rows.Scan(&msg.ID, &msg.MessageID, &msg.Direction, &msg.Status, &msg.Payload, &msg.CreatedAt); err != nil {
-			log.Printf("Failed to scan message: %v", err)
+			logger.Warn(ctx, "Failed to scan message: %v", err)
 			continue
 		}
 		messages = append(messages, msg)
@@ -227,13 +229,14 @@ func (h *Handlers) messagesHandler(w http.ResponseWriter, r *http.Request) {
 // partnersHandler handles GET /api/dashboard/partners
 // Returns list of trading partners
 func (h *Handlers) partnersHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	rows, err := h.DB.Query(`
 		SELECT id, partner_id, name, jwks_url, created_at
 		FROM trading_partners
 		ORDER BY created_at DESC
 	`)
 	if err != nil {
-		log.Printf("Failed to query partners: %v", err)
+		logger.Error(ctx, "Failed to query partners: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to query partners", err)
 		return
 	}
@@ -246,7 +249,7 @@ func (h *Handlers) partnersHandler(w http.ResponseWriter, r *http.Request) {
 		var createdAt time.Time
 
 		if err := rows.Scan(&id, &partnerID, &name, &jwksURL, &createdAt); err != nil {
-			log.Printf("Failed to scan partner: %v", err)
+			logger.Warn(ctx, "Failed to scan partner: %v", err)
 			continue
 		}
 
@@ -268,6 +271,7 @@ func (h *Handlers) partnersHandler(w http.ResponseWriter, r *http.Request) {
 // discoverPartnerHandler handles POST /api/dashboard/partners/discover
 // Initiates partner auto-discovery from AS5 configuration URL
 func (h *Handlers) discoverPartnerHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	var req PartnerDiscoveryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondWithError(w, http.StatusBadRequest, "Invalid request body", err)
@@ -279,12 +283,12 @@ func (h *Handlers) discoverPartnerHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	log.Printf("Discovering partner from: %s", req.DiscoveryURL)
+	logger.Info(ctx, "Discovering partner from: %s", req.DiscoveryURL)
 
 	// Fetch AS5 configuration
 	as5Config, err := discovery.FetchAS5Config(req.DiscoveryURL)
 	if err != nil {
-		log.Printf("Failed to fetch AS5 config: %v", err)
+		logger.Warn(ctx, "Failed to fetch AS5 config: %v", err)
 		respondWithError(w, http.StatusBadRequest, "Failed to fetch partner configuration", err)
 		return
 	}
@@ -292,7 +296,7 @@ func (h *Handlers) discoverPartnerHandler(w http.ResponseWriter, r *http.Request
 	// Fetch partner's JWKS
 	jwks, err := discovery.FetchAndCachePartnerKeys(as5Config.JWKSUri)
 	if err != nil {
-		log.Printf("Failed to fetch partner JWKS: %v", err)
+		logger.Warn(ctx, "Failed to fetch partner JWKS: %v", err)
 		respondWithError(w, http.StatusBadRequest, "Failed to fetch partner keys", err)
 		return
 	}
@@ -310,12 +314,12 @@ func (h *Handlers) discoverPartnerHandler(w http.ResponseWriter, r *http.Request
 	`, as5Config.Issuer, as5Config.OrganizationName, as5Config.JWKSUri, jwks, time.Now(), time.Now(), time.Now())
 
 	if err != nil {
-		log.Printf("Failed to save partner: %v", err)
+		logger.Error(ctx, "Failed to save partner: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to save partner", err)
 		return
 	}
 
-	log.Printf("Partner discovered and saved: %s (%s)", as5Config.OrganizationName, as5Config.Issuer)
+	logger.Info(ctx, "Partner discovered and saved: %s (%s)", as5Config.OrganizationName, as5Config.Issuer)
 
 	response := PartnerDiscoveryResponse{
 		PartnerID: as5Config.Issuer,
@@ -339,9 +343,10 @@ func (h *Handlers) discoverPartnerHandler(w http.ResponseWriter, r *http.Request
 // websocketHandler handles GET /api/dashboard/ws
 // Upgrades the connection to WebSocket for real-time updates
 func (h *Handlers) websocketHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	// Check if WebSocket hub is initialized
 	if h.WebSocketHub == nil {
-		log.Printf("WebSocket hub not initialized")
+		logger.Error(ctx, "WebSocket hub not initialized")
 		http.Error(w, "WebSocket not available", http.StatusServiceUnavailable)
 		return
 	}
@@ -349,7 +354,7 @@ func (h *Handlers) websocketHandler(w http.ResponseWriter, r *http.Request) {
 	// Upgrade HTTP connection to WebSocket
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("Failed to upgrade to WebSocket: %v", err)
+		logger.Error(ctx, "Failed to upgrade to WebSocket: %v", err)
 		return
 	}
 

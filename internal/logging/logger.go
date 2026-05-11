@@ -7,42 +7,63 @@ import (
 	"time"
 )
 
-// Logger wraps standard logger with context support
+// ContextKey is the type used for context keys defined by this package.
+// Using a custom type avoids collisions with keys defined in other packages.
+type ContextKey string
+
+const (
+	// RequestIDKey carries a per-request correlation ID across goroutines.
+	RequestIDKey ContextKey = "request_id"
+
+	// UserIDKey carries the authenticated user's numeric ID.
+	UserIDKey ContextKey = "user_id"
+)
+
+// WithRequestID returns a copy of ctx carrying the given request ID.
+func WithRequestID(ctx context.Context, requestID string) context.Context {
+	return context.WithValue(ctx, RequestIDKey, requestID)
+}
+
+// WithUserID returns a copy of ctx carrying the given user ID.
+func WithUserID(ctx context.Context, userID int64) context.Context {
+	return context.WithValue(ctx, UserIDKey, userID)
+}
+
+// Logger wraps the standard logger with context-aware structured output.
 type Logger struct {
 	prefix string
 }
 
-// New creates a new logger instance
+// New creates a new logger instance with the given prefix.
 func New(prefix string) *Logger {
 	return &Logger{prefix: prefix}
 }
 
-// Info logs an informational message with context
+// Info logs an informational message with context.
 func (l *Logger) Info(ctx context.Context, format string, args ...interface{}) {
 	l.log(ctx, "INFO", format, args...)
 }
 
-// Error logs an error message with context
+// Error logs an error message with context.
 func (l *Logger) Error(ctx context.Context, format string, args ...interface{}) {
 	l.log(ctx, "ERROR", format, args...)
 }
 
-// Warn logs a warning message with context
+// Warn logs a warning message with context.
 func (l *Logger) Warn(ctx context.Context, format string, args ...interface{}) {
 	l.log(ctx, "WARN", format, args...)
 }
 
-// Debug logs a debug message with context
+// Debug logs a debug message with context.
 func (l *Logger) Debug(ctx context.Context, format string, args ...interface{}) {
 	l.log(ctx, "DEBUG", format, args...)
 }
 
-// log is the internal logging function
+// log is the internal logging function.
 func (l *Logger) log(ctx context.Context, level string, format string, args ...interface{}) {
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	message := fmt.Sprintf(format, args...)
 
-	// Extract request ID and user ID from context if available
 	requestID := extractRequestID(ctx)
 	userID := extractUserID(ctx)
 
@@ -66,52 +87,47 @@ func (l *Logger) log(ctx context.Context, level string, format string, args ...i
 	log.Println(logLine)
 }
 
-// extractRequestID tries to extract request ID from context
+// extractRequestID reads the request ID from context (empty string if absent).
 func extractRequestID(ctx context.Context) string {
 	if ctx == nil {
 		return ""
 	}
-	// Try with string key directly (used by API package)
-	if requestID, ok := ctx.Value("request_id").(string); ok {
+	if requestID, ok := ctx.Value(RequestIDKey).(string); ok {
 		return requestID
 	}
 	return ""
 }
 
-// extractUserID tries to extract user ID from context
+// extractUserID reads the user ID from context (0 if absent).
 func extractUserID(ctx context.Context) int64 {
 	if ctx == nil {
 		return 0
 	}
-	// Try with string key directly (used by API package)
-	if userID, ok := ctx.Value("user_id").(int64); ok {
+	if userID, ok := ctx.Value(UserIDKey).(int64); ok {
 		return userID
 	}
 	return 0
 }
 
-// ContextKey is a type for context keys (for backward compatibility)
-type ContextKey string
-
-// Default logger instance
+// Default logger instance (used by the package-level helpers below).
 var defaultLogger = New("app")
 
-// Info logs an informational message with the default logger
+// Info logs an informational message with the default logger.
 func Info(ctx context.Context, format string, args ...interface{}) {
 	defaultLogger.Info(ctx, format, args...)
 }
 
-// Error logs an error message with the default logger
+// Error logs an error message with the default logger.
 func Error(ctx context.Context, format string, args ...interface{}) {
 	defaultLogger.Error(ctx, format, args...)
 }
 
-// Warn logs a warning message with the default logger
+// Warn logs a warning message with the default logger.
 func Warn(ctx context.Context, format string, args ...interface{}) {
 	defaultLogger.Warn(ctx, format, args...)
 }
 
-// Debug logs a debug message with the default logger
+// Debug logs a debug message with the default logger.
 func Debug(ctx context.Context, format string, args ...interface{}) {
 	defaultLogger.Debug(ctx, format, args...)
 }

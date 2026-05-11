@@ -1,7 +1,28 @@
 # Active Context: FideX AS5 Node
 
 ## Current Work Focus
-**Refactor Phase 1.4 — Fold api.* package vars into Handlers struct + extract main.go helpers** (2026-05-11). Phase 1.3 merged to master. All HTTP handlers in `internal/api` are now methods on `*api.Handlers`; the transitional package-level vars (`NodeConfig`, `DB`, `MessageRepo`, `PartnerRepo`, `UserRepo`, `SessionRepo`, `AuthSvc`, `DiscoveryService`) and the `wsHub` global in `dashboard_handlers.go` are gone. `main.go` now reads as a thin orchestrator: `mustLoadConfig` → `ensureKeysExist` → `mustInitContainer` → `buildHandlers` → `mustStartFileWatcher` → `startSessionCleanup` → `mustSetupServers` → `runWithGracefulShutdown`. Branch: `feature/phase-1.4-api-handlers-struct`.
+**Refactor Phase 1.6 — Structured logging across all packages** (2026-05-11). Phase 1.4 merged to master. Every `log.Printf`/`log.Println` call outside of `main.go` `must*` helpers now flows through `internal/logging.Logger` with per-package prefixes (`api`, `auth`, `container`, `dashboard`, `discovery`, `main`, `queue`, `watcher`). Bug fix: `RequestIDKey` / `UserIDKey` unified in `internal/logging` (typed `ContextKey`); `internal/api/context.go` re-exports them — request_ids and user_ids now actually propagate from middleware to log lines. `auth.RequireAuth` / `auth.RequireAuthAPI` stamp the authenticated user id into context via `logging.WithUserID` so every downstream log line carries it automatically. Branch: `feature/phase-1.6-structured-logging`.
+
+## Recent Changes (2026-05-11) — Phase 1.6
+
+### What changed
+- ✅ **Context-key bug fix in `internal/logging`**: `extractRequestID` and `extractUserID` used string keys `"request_id"` / `"user_id"`; `internal/api/context.go` was setting them via typed `ContextKey("request_id")`. Different keys in Go, so log lines never carried the request id. Unified by moving `RequestIDKey`, `UserIDKey` (typed `logging.ContextKey`) into `internal/logging` plus helpers `logging.WithRequestID` / `logging.WithUserID`. `internal/api/context.go` now re-exports them.
+- ✅ **`logging.Logger` honoured everywhere**: every `log.Printf`/`log.Println` call across `internal/api/*`, `internal/auth/middleware.go`, `internal/container/container.go`, `internal/dashboard/websocket.go`, `internal/discovery/service.go`, `internal/queue/worker.go`, `internal/watcher/fs_worker.go`, and `cmd/fidex-node/main.go` rewritten as `pkgLogger.Info/Warn/Error/Debug(ctx, …)`. Per-package logger instances named after the package (`api`, `auth`, `container`, `dashboard`, `discovery`, `main`, `queue`, `watcher`).
+- ✅ **`auth` middleware seeds user id into context**: both `RequireAuth` and `RequireAuthAPI` now call `logging.WithUserID(ctx, user.ID)` so every downstream log line in the request lifecycle carries `[user_id=N]` automatically.
+- ✅ **Level discipline**: failed logins, IP allowlist denials, invalid sessions, retry warnings → `Warn`. Repository / I/O failures → `Error`. Request lifecycle events → `Info`. Debug-only details (IP allowlist check, websocket client messages) → `Debug`.
+- ✅ **`log.Fatalf` retained only in `cmd/fidex-node/main.go` `must*` helpers**, per the project convention "only main can panic". All other `log.*` calls eradicated outside `internal/logging/` itself.
+- ✅ **Test fix-up**: `internal/logging/logger_test.go` updated to use the typed `RequestIDKey` / `UserIDKey` constants instead of string literals. All 25+ logging tests still green.
+
+### Verification (Phase 1.6)
+- `go build ./...` clean
+- `go test ./...` green (api / config / container / crypto / discovery / errors / logging / queue / repository all pass)
+- Binary smoke test: every boot log line now formatted as `2026-05-11 HH:MM:SS [LEVEL] pkg: message` with per-package prefix visible (`main`, `container`, `queue`, `watcher`, `api`). SIGTERM still produces clean shutdown sequence.
+
+### Outstanding
+- Repository interface gap: dashboard / settings handlers still use `h.DB` for raw SQL (paginated listing, date-range counts, partner upsert). Track for a future Phase 1.x.
+- Future log levels via env (LEVEL=DEBUG/INFO/WARN/ERROR) — `internal/logging` currently emits all levels unconditionally.
+
+## Recent Changes (2026-05-11) — Phase 1.4
 
 ## Recent Changes (2026-05-11) — Phase 1.4
 
