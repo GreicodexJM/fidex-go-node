@@ -1,19 +1,40 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
 
+	"fidex-node/internal/auth"
 	"fidex-node/internal/config"
 	"fidex-node/internal/discovery"
+	"fidex-node/internal/domain"
 )
 
-// NodeConfig is the application config set from main
-var NodeConfig *config.Config
-
-// DiscoveryService is the discovery service instance
-var DiscoveryService *discovery.DiscoveryService
+// Transitional package-level dependencies injected from main.go after
+// container initialization. These will be folded into an APIHandlers
+// struct in Phase 1.4 of the refactor.
+var (
+	// NodeConfig is the application config set from main
+	NodeConfig *config.Config
+	// DiscoveryService is the discovery service instance
+	DiscoveryService *discovery.DiscoveryService
+	// AuthSvc provides session / user authentication operations
+	AuthSvc *auth.Service
+	// MessageRepo persists FideX messages
+	MessageRepo domain.MessageRepository
+	// PartnerRepo persists trading partner profiles
+	PartnerRepo domain.PartnerRepository
+	// UserRepo persists dashboard users
+	UserRepo domain.UserRepository
+	// SessionRepo persists dashboard sessions
+	SessionRepo domain.SessionRepository
+	// DB exposes the raw connection for handlers that need ad-hoc queries
+	// not yet covered by repository interfaces (dashboard metrics, settings
+	// listings). Tracked as deuda técnica for Phase 1.4+.
+	DB *sql.DB
+)
 
 // as5ConfigHandler handles GET /.well-known/as5-configuration
 // Returns the node's AS5 discovery document
@@ -63,7 +84,7 @@ func webhookRegistrationHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Process the registration
-	if err := DiscoveryService.HandleWebhookRegistration(req); err != nil {
+	if err := DiscoveryService.HandleWebhookRegistration(r.Context(), req); err != nil {
 		log.Printf("Failed to process registration: %v", err)
 		respondWithJSONError(w, http.StatusBadRequest, err.Error())
 		return

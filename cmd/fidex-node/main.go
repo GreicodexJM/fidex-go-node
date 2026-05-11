@@ -11,16 +11,12 @@ import (
 	"time"
 
 	"fidex-node/internal/api"
-	"fidex-node/internal/auth"
 	"fidex-node/internal/config"
 	"fidex-node/internal/constants"
 	"fidex-node/internal/container"
 	"fidex-node/internal/crypto"
 	"fidex-node/internal/watcher"
 )
-
-// Global config accessible to all packages
-var AppConfig *config.Config
 
 func main() {
 	log.Println("========================================")
@@ -33,7 +29,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
-	AppConfig = cfg
 	api.NodeConfig = cfg // Set config for API handlers
 	log.Printf("✓ Configuration loaded (Internal Port: %d, Public Port: %d)", cfg.InternalAPIPort, cfg.PublicAPIPort)
 
@@ -86,15 +81,25 @@ func main() {
 	}
 	log.Println("✓ Service container initialized")
 
+	// 3b. Wire transitional api-package dependencies. These will be folded into
+	// an APIHandlers struct in Phase 1.4 of the refactor.
+	api.DB = appContainer.DB
+	api.MessageRepo = appContainer.MessageRepo
+	api.PartnerRepo = appContainer.PartnerRepo
+	api.UserRepo = appContainer.UserRepo
+	api.SessionRepo = appContainer.SessionRepo
+	api.AuthSvc = appContainer.AuthService
+	api.DiscoveryService = appContainer.DiscoveryService
+
 	// 4. Initialize default admin user
 	log.Println("Checking for default user...")
-	if err := api.InitializeDefaultUser(); err != nil {
+	if err := api.InitializeDefaultUser(context.Background()); err != nil {
 		log.Fatalf("Failed to initialize default user: %v", err)
 	}
 
 	// 5. Initialize File Watcher
 	log.Println("Starting file watcher...")
-	fw, err := watcher.NewFileWatcher()
+	fw, err := watcher.NewFileWatcher(appContainer.MessageRepo)
 	if err != nil {
 		log.Fatalf("Failed to create file watcher: %v", err)
 	}
@@ -108,7 +113,7 @@ func main() {
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
-			if err := auth.CleanupExpiredSessions(); err != nil {
+			if err := appContainer.AuthService.CleanupExpiredSessions(context.Background()); err != nil {
 				log.Printf("ERROR: Failed to cleanup expired sessions: %v", err)
 			} else {
 				log.Println("✓ Expired sessions cleaned up")

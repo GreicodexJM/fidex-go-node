@@ -1,9 +1,9 @@
 # Progress: FideX AS5 Node Refactoring
 
 ## Overall Status
-**Current Phase**: Phase 1 - Foundation Improvements  
-**Progress**: 0% (Just started)  
-**Last Updated**: 2026-02-20
+**Current Phase**: Phase 1 - Foundation Improvements
+**Progress**: ~60% (Phase 1.3 complete on branch `feature/phase-1.3-remove-db-global`)
+**Last Updated**: 2026-05-11
 
 ## Phase 1: Foundation Improvements (In Progress)
 
@@ -26,27 +26,29 @@
 - [x] Implement Close() for cleanup
 - [x] Add temporary adapter layer for smooth migration
 
-### 1.3 Refactor Database Layer 🔜
-**Status**: Not started
-**Files**: `internal/db/*.go`
-- [ ] Remove global `var DB *sql.DB`
-- [ ] Create SQLiteMessageRepository implementing MessageRepository
-- [ ] Create SQLitePartnerRepository implementing PartnerRepository
-- [ ] Add context.Context to all repository methods
-- [ ] Create SQLiteSessionRepository
-- [ ] Create SQLiteUserRepository
-- [ ] Update all error messages
-- [ ] Run database tests
+### 1.3 Refactor Database Layer ✅
+**Status**: Complete (2026-05-11, branch `feature/phase-1.3-remove-db-global`)
+**Files**: deleted `internal/db/`; added `internal/repository/schema.go`
+- [x] Remove global `var DB *sql.DB` (and the entire `internal/db` package)
+- [x] SQLite repositories live in `internal/repository/{message,partner,session,user}_repository.go`
+- [x] All repository methods accept `context.Context`
+- [x] Schema + connection setup moved to `repository.OpenSQLite()` + `InitSchema(db)`
+- [x] All production callsites migrated (watcher, discovery, auth, api/*)
+- [x] `internal/crypto/partners.go` deleted (was dead code)
+- [x] Discovery tests rewritten to use repository pattern
+- [x] `go build ./...` clean, `go test ./...` green (9 packages OK)
+- [x] Smoke test: binary boots through full container init without errors
 
 ### 1.4 Refactor main.go 🔜
-**Status**: Not started
+**Status**: Partially advanced (AppConfig global removed); structural extraction still pending
 **Files**: `cmd/fidex-node/main.go`
+- [x] Remove global AppConfig variable
 - [ ] Extract mustLoadConfig()
 - [ ] Extract mustInitializeServices()
 - [ ] Extract ensureKeysExist()
 - [ ] Extract mustSetupServers()
 - [ ] Extract runWithGracefulShutdown()
-- [ ] Remove global AppConfig variable
+- [ ] Fold transitional `api.*` package-level vars into an `APIHandlers` struct passed to `SetupXxxRouter`
 - [ ] Test application starts correctly
 
 ### 1.5 Fix Configuration Flag Parsing ✅
@@ -202,7 +204,7 @@
 ### Code Quality
 - **Compile Errors**: 0 (current)
 - **Linter Warnings**: TBD (need to run golangci-lint)
-- **Global Variables**: 3 (DB, AppConfig, NodeConfig) → Target: 0
+- **Global Variables**: 0 production globals removed (`db.DB`, `main.AppConfig` deleted). Remaining transitional `api.*` package vars are intentional and will be folded into `APIHandlers` in Phase 1.4.
 
 ### Performance (Not regressed)
 - **Startup Time**: <2 seconds

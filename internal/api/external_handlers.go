@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"fidex-node/internal/db"
+	"fidex-node/internal/domain"
 
 	"github.com/google/uuid"
 )
@@ -51,16 +51,16 @@ func inboundHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create the message record
-	msg := &db.Message{
+	msg := &domain.Message{
 		MessageID: envelope.Routing.MessageID,
-		Direction: db.DirectionInbound,
-		Status:    db.StatusDelivered,
+		Direction: domain.DirectionInbound,
+		Status:    domain.StatusDelivered,
 		Payload:   string(envelopeBytes),
 		CreatedAt: time.Now(),
 	}
 
-	// Save to database
-	if err := db.InsertMessage(msg); err != nil {
+	// Save via repository
+	if err := MessageRepo.Create(r.Context(), msg); err != nil {
 		log.Printf("Failed to insert inbound message: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to store message", err)
 		return
@@ -111,15 +111,15 @@ func inboundHandler(w http.ResponseWriter, r *http.Request) {
 
 	workerPayloadBytes, _ := json.Marshal(receiptWorkerPayload)
 
-	receiptMsg := &db.Message{
+	receiptMsg := &domain.Message{
 		MessageID: receiptEnvelope.Routing.MessageID,
-		Direction: db.DirectionOutbound,
-		Status:    db.StatusQueued,
+		Direction: domain.DirectionOutbound,
+		Status:    domain.StatusQueued,
 		Payload:   string(workerPayloadBytes),
 		CreatedAt: time.Now(),
 	}
 
-	if err := db.InsertMessage(receiptMsg); err != nil {
+	if err := MessageRepo.Create(r.Context(), receiptMsg); err != nil {
 		log.Printf("Failed to queue receipt: %v", err)
 		// We don't fail the request if receipt queuing fails, but we log it
 	} else {
@@ -160,15 +160,15 @@ func receiptHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create a new message record for the receipt
-	msg := &db.Message{
+	msg := &domain.Message{
 		MessageID: envelope.Routing.MessageID,
-		Direction: db.DirectionInbound,
-		Status:    db.StatusDelivered,
+		Direction: domain.DirectionInbound,
+		Status:    domain.StatusDelivered,
 		Payload:   string(receiptBytes),
 		CreatedAt: time.Now(),
 	}
 
-	if err := db.InsertMessage(msg); err != nil {
+	if err := MessageRepo.Create(r.Context(), msg); err != nil {
 		log.Printf("Failed to insert receipt: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to store receipt", err)
 		return
@@ -191,12 +191,12 @@ func receiptHandler(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal([]byte(envelope.Payload), &receiptPayload); err == nil {
 		// Update the original message status
 		if receiptPayload.OriginalMessageID != "" {
-			newStatus := db.StatusDelivered
+			newStatus := domain.StatusDelivered
 			if receiptPayload.Status == "error" || receiptPayload.Status == "failed" {
-				newStatus = db.StatusFailed
+				newStatus = domain.StatusFailed
 			}
 
-			if err := db.UpdateMessageStatus(receiptPayload.OriginalMessageID, string(newStatus)); err != nil {
+			if err := MessageRepo.UpdateStatus(r.Context(), receiptPayload.OriginalMessageID, newStatus); err != nil {
 				log.Printf("Failed to update original message status: %v", err)
 			} else {
 				log.Printf("Updated status of message %s to %s based on receipt", receiptPayload.OriginalMessageID, newStatus)

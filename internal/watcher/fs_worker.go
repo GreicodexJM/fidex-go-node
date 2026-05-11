@@ -1,6 +1,7 @@
 package watcher
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -9,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"fidex-node/internal/db"
+	"fidex-node/internal/domain"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/google/uuid"
@@ -22,20 +23,26 @@ const (
 
 // FileWatcher manages the fsnotify watcher for the outbox directory
 type FileWatcher struct {
-	watcher *fsnotify.Watcher
-	done    chan bool
+	watcher     *fsnotify.Watcher
+	done        chan bool
+	messageRepo domain.MessageRepository
 }
 
-// NewFileWatcher creates a new FileWatcher instance
-func NewFileWatcher() (*FileWatcher, error) {
+// NewFileWatcher creates a new FileWatcher instance with an injected message repository
+func NewFileWatcher(messageRepo domain.MessageRepository) (*FileWatcher, error) {
+	if messageRepo == nil {
+		return nil, fmt.Errorf("messageRepo cannot be nil")
+	}
+
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create fsnotify watcher: %w", err)
 	}
 
 	return &FileWatcher{
-		watcher: watcher,
-		done:    make(chan bool),
+		watcher:     watcher,
+		done:        make(chan bool),
+		messageRepo: messageRepo,
 	}, nil
 }
 
@@ -150,16 +157,16 @@ func (fw *FileWatcher) processFile(filePath string) error {
 	messageID := uuid.New().String()
 
 	// Create a message record
-	msg := &db.Message{
+	msg := &domain.Message{
 		MessageID: messageID,
-		Direction: db.DirectionOutbound,
-		Status:    db.StatusQueued,
+		Direction: domain.DirectionOutbound,
+		Status:    domain.StatusQueued,
 		Payload:   string(fileData),
 		CreatedAt: time.Now(),
 	}
 
-	// Save to the database
-	if err := db.InsertMessage(msg); err != nil {
+	// Save via repository
+	if err := fw.messageRepo.Create(context.Background(), msg); err != nil {
 		return fmt.Errorf("failed to insert message into database: %w", err)
 	}
 

@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"fidex-node/internal/dashboard"
-	"fidex-node/internal/db"
 	"fidex-node/internal/discovery"
+	"fidex-node/internal/domain"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
@@ -55,10 +55,10 @@ type DashboardMetrics struct {
 
 // MessageListResponse represents paginated message list
 type MessageListResponse struct {
-	Messages []db.Message `json:"messages"`
-	Total    int          `json:"total"`
-	Page     int          `json:"page"`
-	PerPage  int          `json:"per_page"`
+	Messages []domain.Message `json:"messages"`
+	Total    int              `json:"total"`
+	Page     int              `json:"page"`
+	PerPage  int              `json:"per_page"`
 }
 
 // PartnerDiscoveryRequest represents a request to discover a partner
@@ -119,7 +119,7 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 	// Count messages in last 24 hours by status
 	cutoff := time.Now().Add(-24 * time.Hour)
 
-	rows, err := db.DB.Query(`
+	rows, err := DB.Query(`
 		SELECT status, COUNT(*) 
 		FROM messages 
 		WHERE created_at >= ? 
@@ -141,11 +141,11 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 			total += count
 
 			switch status {
-			case string(db.StatusDelivered):
+			case string(domain.StatusDelivered):
 				metrics.MessagesDelivered24h = count
-			case string(db.StatusQueued):
+			case string(domain.StatusQueued):
 				metrics.MessagesQueued = count
-			case string(db.StatusFailed):
+			case string(domain.StatusFailed):
 				metrics.MessagesFailed = count
 			}
 		}
@@ -157,7 +157,7 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Count active partners
-	err = db.DB.QueryRow(`SELECT COUNT(*) FROM trading_partners`).Scan(&metrics.ActivePartners)
+	err = DB.QueryRow(`SELECT COUNT(*) FROM trading_partners`).Scan(&metrics.ActivePartners)
 	if err != nil {
 		log.Printf("Failed to count partners: %v", err)
 	}
@@ -204,7 +204,7 @@ func messagesHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Get total count
 	var total int
-	err := db.DB.QueryRow(countQuery, args...).Scan(&total)
+	err := DB.QueryRow(countQuery, args...).Scan(&total)
 	if err != nil {
 		log.Printf("Failed to count messages: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to count messages", err)
@@ -212,7 +212,7 @@ func messagesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get messages
-	rows, err := db.DB.Query(query, queryArgs...)
+	rows, err := DB.Query(query, queryArgs...)
 	if err != nil {
 		log.Printf("Failed to query messages: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to query messages", err)
@@ -220,9 +220,9 @@ func messagesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	messages := []db.Message{}
+	messages := []domain.Message{}
 	for rows.Next() {
-		var msg db.Message
+		var msg domain.Message
 		if err := rows.Scan(&msg.ID, &msg.MessageID, &msg.Direction, &msg.Status, &msg.Payload, &msg.CreatedAt); err != nil {
 			log.Printf("Failed to scan message: %v", err)
 			continue
@@ -243,7 +243,7 @@ func messagesHandler(w http.ResponseWriter, r *http.Request) {
 // partnersHandler handles GET /api/dashboard/partners
 // Returns list of trading partners
 func partnersHandler(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.DB.Query(`
+	rows, err := DB.Query(`
 		SELECT id, partner_id, name, jwks_url, created_at 
 		FROM trading_partners 
 		ORDER BY created_at DESC
@@ -314,7 +314,7 @@ func discoverPartnerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save partner to database
-	_, err = db.DB.Exec(`
+	_, err = DB.Exec(`
 		INSERT INTO trading_partners (partner_id, name, jwks_url, public_key_jwks, last_key_refresh, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(partner_id) DO UPDATE SET

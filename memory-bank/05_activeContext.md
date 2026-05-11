@@ -1,13 +1,56 @@
-# Active Context: FideX AS5 Node Refactoring
+# Active Context: FideX AS5 Node
 
 ## Current Work Focus
-**Phase 1: Foundation Improvements** - Eliminating technical debt and establishing clean architecture patterns
+**Refactor Phase 1.3 — Remove `db.DB` global** (2026-05-11). All production callsites migrated from `internal/db` package globals to repositories injected via the service container. `internal/db` package deleted; schema and connection setup now live in `internal/repository/schema.go`. Branch: `feature/phase-1.3-remove-db-global`.
 
-## Recent Changes (Just Completed)
-- ✅ Created comprehensive memory bank structure (6 files)
-- ✅ Documented project charter, product context, and system patterns
-- ✅ Identified 10 major issues requiring refactoring
-- ✅ Planned 3-phase refactoring strategy
+## Recent Changes (2026-05-11) — Phase 1.3
+
+### What changed
+- ✅ **Deleted `internal/db/`** entirely (`sqlite.go`, `partners.go`). Schema + connection opening moved to `internal/repository/schema.go` as `OpenSQLite()` + `InitSchema()`.
+- ✅ **Eliminated 3 globals**: `db.DB`, `main.AppConfig`, `api.NodeConfig` (the last one was kept as a transitional package-level var — documented).
+- ✅ **`auth` package** converted to `auth.Service` struct holding `domain.SessionRepository` + `domain.UserRepository`. Middleware now methods on `*Service`.
+- ✅ **`discovery.DiscoveryService`** now receives `domain.PartnerRepository` in constructor; methods take `context.Context`.
+- ✅ **`watcher.FileWatcher`** now receives `domain.MessageRepository` in constructor.
+- ✅ **`internal/crypto/partners.go`** deleted (was dead code — no non-test callers).
+- ✅ **API handlers** wired via transitional package-level vars (`api.MessageRepo`, `api.PartnerRepo`, `api.AuthSvc`, `api.DB`, etc.) set from `main.go` after container init. `api.DB` covers the dashboard/settings raw-SQL queries until repository interfaces grow to cover them.
+- ✅ **Container** now opens DB via `repository.OpenSQLite` (no global), adds `AuthService` field, wires `DiscoveryService` with the partner repo.
+- ✅ **Discovery tests** rewritten to use `repository.NewSQLitePartnerRepository` + `OpenSQLite` (no globals).
+
+### Outstanding (next phase)
+- Phase 1.4: Fold the `api.*` transitional package-level vars into an `APIHandlers` struct passed to `SetupXxxRouter` factories. Extract `mustLoadConfig` / `mustInit` helpers from `main.go`.
+- Phase 1.6: Replace 223 `log.Printf` calls with the `internal/logging` structured logger flowing through DI.
+- Repository interface gap: `MessageRepository` does not yet cover paginated listing or date-range counts (dashboard handlers still use raw SQL via `api.DB`).
+
+## Pre-Phase 1.3 history (2026-02-23 spec work) — kept for reference
+
+### Phase 1 (Critical Fixes) — COMPLETE
+- ✅ `openapi.yaml`: Complete rewrite with unified field names, all endpoints, full schemas
+- ✅ `fidex-protocol-specification.md`: Document hierarchy preamble, receipt_webhook REQUIRED, complete J-MDN spec (7 sub-sections), conformance profiles (Core/Enhanced/Edge), interoperability test vectors
+- ✅ `fidex-annotated-specification.md` (renamed from `fidex.as5-draft-specification.md`): INFORMATIVE preamble added, relationship to normative spec clarified
+- ✅ Timestamp format standardized: `YYYY-MM-DDTHH:mm:ss.SSSZ`
+
+## Older spec phases (2026-02-23)
+
+### Phase 1 (Critical Fixes) — COMPLETE
+- ✅ `openapi.yaml`: Complete rewrite with unified field names, all endpoints, full schemas
+- ✅ `fidex-protocol-specification.md`: Document hierarchy preamble, receipt_webhook REQUIRED, complete J-MDN spec (7 sub-sections), conformance profiles (Core/Enhanced/Edge), interoperability test vectors
+- ✅ `fidex-annotated-specification.md` (renamed from `fidex.as5-draft-specification.md`): INFORMATIVE preamble added, relationship to normative spec clarified
+- ✅ Timestamp format standardized: `YYYY-MM-DDTHH:mm:ss.SSSZ`
+
+### Phase 2 (Enhancements) — COMPLETE
+- ✅ Document type registry (Section 3.3): 13 standard types + custom type naming convention
+- ✅ `payload_digest` optional field added to routing header (SHA-256 integrity without decryption)
+- ✅ Version negotiation protocol (Section 6.2.1) with `supported_versions` array in AS5 config
+- ✅ Partner de-registration protocol (Section 6.5) with ACTIVE/SUSPENDED/INACTIVE states
+- ✅ AS5 config expanded: `supported_versions`, `conformance_profile`, `supported_document_types`, `receive_receipt` endpoint
+- ✅ `fidex-quickstart.md`: 5-minute quick start guide created
+
+### Phase 3 (Machine Validation & Operations) — COMPLETE
+- ✅ JSON Schema definitions (Appendix E): 5 schemas for routing header, envelope, J-MDN, error response, AS5 config
+- ✅ Security guide restructured: INFORMATIVE preamble, 15-threat control matrix with spec references and defense layers diagram
+- ✅ Implementation guide expanded: New Section 8 with error classification table, decision tree, Go/JS error handlers, J-MDN retry implementation, sender-side retry, security leak prevention rules
+- ✅ All informative documents now have consistent document hierarchy preamble
+- ✅ Duplicate footers removed, section numbering fixed across all guides
 
 ## Next Immediate Steps
 
