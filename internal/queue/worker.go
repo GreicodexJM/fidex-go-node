@@ -26,7 +26,14 @@ type Worker struct {
 	httpClient   *http.Client
 	stopChan     chan struct{}
 	config       WorkerConfig
+	// nodeID is this node's own URN, stamped as sender_id on every outbound
+	// FideX envelope. Defaults to empty (set via SetNodeID by the container).
+	nodeID string
 }
+
+// SetNodeID configures the local node URN used as sender_id when building
+// outbound FideX envelopes. Must be called once at startup before Start().
+func (w *Worker) SetNodeID(nodeID string) { w.nodeID = nodeID }
 
 // WorkerConfig holds worker configuration
 type WorkerConfig struct {
@@ -141,42 +148,92 @@ func (w *Worker) processQueue() {
 	}
 }
 
-// deliverMessage delivers a message to the destination partner
+// queuedOutboundPayload is the JSON shape this worker expects on every
+// outbound row in the messages table. It matches api.TransmitRequest plus
+// the receipt-routing shape used by the inbound handler. The worker is the
+// place where business documents become signed-and-encrypted FideX envelopes.
+type queuedOutboundPayload struct {
+	DestinationPartnerID string          `json:"destination_partner_id"`
+	DocumentType         string          `json:"document_type"`
+	ReceiptWebhook       string          `json:"receipt_webhook,omitempty"`
+	Payload              json.RawMessage `json:"payload"`
+}
+
+// deliverMessage parses a queued outbound row, builds a signed+encrypted
+// FideX envelope addressed to the destination partner, and POSTs it to the
+// partner's published message endpoint.
 func (w *Worker) deliverMessage(ctx context.Context, msg *domain.Message) error {
-	// Parse the FideX envelope from payload
-	var envelope crypto.FidexEnvelope
-	if err := json.Unmarshal([]byte(msg.Payload), &envelope); err != nil {
-		return errors.Validation("invalid message payload format")
+	// 1. Parse the queued payload (TransmitRequest-shaped).
+	var queued queuedOutboundPayload
+	if err := json.Unmarshal([]byte(msg.Payload), &queued); err != nil {
+		return errors.Validation("invalid queued payload format")
+	}
+	if queued.DestinationPartnerID == "" {
+		return errors.Validation("destination_partner_id is empty")
+	}
+	if len(queued.Payload) == 0 {
+		return errors.Validation("payload (business document) is empty")
 	}
 
-	// Get partner information
-	partner, err := w.partnerRepo.GetByID(ctx, envelope.Routing.ReceiverID)
+	// 2. Resolve the destination partner + their published endpoint.
+	partner, err := w.partnerRepo.GetByID(ctx, queued.DestinationPartnerID)
 	if err != nil {
 		return errors.Wrap(err, errors.ErrCodePartnerNotFound,
-			fmt.Sprintf("partner %s not found", envelope.Routing.ReceiverID))
+			fmt.Sprintf("partner %s not found", queued.DestinationPartnerID))
 	}
-
 	if partner.MessageEndpoint == "" {
 		return errors.Validation("partner has no message endpoint configured")
 	}
+	if partner.PublicKeyJWKS == "" {
+		return errors.Validation("partner has no cached JWKS — cannot encrypt envelope")
+	}
 
-	// Prepare HTTP request
-	payloadBytes, err := json.Marshal(envelope)
+	// 3. Extract the partner's encryption public key.
+	encKey, err := crypto.ParsePublicKeyFromJWKSByUse(partner.PublicKeyJWKS, "enc")
+	if err != nil {
+		return errors.Wrap(err, errors.ErrCodeValidation,
+			"failed to parse partner encryption key from cached JWKS")
+	}
+
+	// 4. Build a signed + encrypted FideX envelope. The business document
+	// is signed with our private key, then JWE-encrypted to the partner's
+	// public key. Crypto details live in crypto.AS5Engine.
+	if w.cryptoEngine == nil {
+		return errors.Validation("crypto engine not configured on worker")
+	}
+	jwePayload, err := w.cryptoEngine.SignAndEncrypt(queued.Payload, encKey)
+	if err != nil {
+		return errors.InternalWrap(err, "failed to sign+encrypt business document")
+	}
+
+	envelope := crypto.FidexEnvelope{
+		Routing: crypto.RoutingHeader{
+			FidexVersion:   "1.0",
+			MessageID:      msg.MessageID,
+			SenderID:       w.nodeID,
+			ReceiverID:     queued.DestinationPartnerID,
+			DocumentType:   queued.DocumentType,
+			Timestamp:      time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
+			ReceiptWebhook: queued.ReceiptWebhook,
+		},
+		Payload: jwePayload,
+	}
+
+	envelopeBytes, err := json.Marshal(envelope)
 	if err != nil {
 		return errors.InternalWrap(err, "failed to marshal envelope")
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", partner.MessageEndpoint, bytes.NewReader(payloadBytes))
+	// 5. Deliver to the partner's message endpoint.
+	req, err := http.NewRequestWithContext(ctx, "POST", partner.MessageEndpoint, bytes.NewReader(envelopeBytes))
 	if err != nil {
 		return errors.InternalWrap(err, "failed to create HTTP request")
 	}
-
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "FideX-Node/1.0")
-	req.Header.Set("X-FideX-Message-ID", envelope.Routing.MessageID)
-	req.Header.Set("X-FideX-Sender", envelope.Routing.SenderID)
+	req.Header.Set("X-FideX-Message-ID", msg.MessageID)
+	req.Header.Set("X-FideX-Sender", w.nodeID)
 
-	// Send the request
 	logger.Info(ctx, "Delivering message %s to %s at %s", msg.MessageID, partner.Name, partner.MessageEndpoint)
 
 	resp, err := w.httpClient.Do(req)
@@ -185,10 +242,7 @@ func (w *Worker) deliverMessage(ctx context.Context, msg *domain.Message) error 
 	}
 	defer resp.Body.Close()
 
-	// Read response body for logging
 	body, _ := io.ReadAll(resp.Body)
-
-	// Check response status
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return errors.New(errors.ErrCodeNetwork,
 			fmt.Sprintf("partner returned status %d: %s", resp.StatusCode, string(body)))

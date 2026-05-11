@@ -189,23 +189,43 @@ func (m *mockPartnerRepository) List(ctx context.Context) ([]*domain.Partner, er
 }
 
 // Helper to create test message with envelope
+// createTestMessage builds a queued outbound row in the shape the worker
+// expects: a TransmitRequest-like JSON with destination_partner_id and a
+// business document under "payload".
 func createTestMessage(messageID, partnerID string) *domain.Message {
-	envelope := crypto.FidexEnvelope{
-		Routing: crypto.RoutingHeader{
-			MessageID:  messageID,
-			SenderID:   "test-sender",
-			ReceiverID: partnerID,
-		},
+	queued := queuedOutboundPayload{
+		DestinationPartnerID: partnerID,
+		DocumentType:         "TEST",
+		Payload:              json.RawMessage(`{"hello":"world"}`),
 	}
-
-	payload, _ := json.Marshal(envelope)
-
+	payload, _ := json.Marshal(queued)
 	return &domain.Message{
 		MessageID: messageID,
 		Direction: domain.DirectionOutbound,
 		Status:    domain.StatusQueued,
 		Payload:   string(payload),
 	}
+}
+
+// makeTestEngineAndJWKS generates a fresh RSA keypair, wraps it in an
+// AS5Engine instance, and returns its public key encoded as a JWKS string
+// suitable for caching on a partner row in tests.
+func makeTestEngineAndJWKS(t *testing.T, kid string) (*crypto.AS5Engine, string) {
+	t.Helper()
+	priv, pub, err := crypto.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	_ = pub
+	engine, err := crypto.NewAS5Engine(priv, "test-node")
+	if err != nil {
+		t.Fatalf("NewAS5Engine: %v", err)
+	}
+	jwks, err := engine.ExportJWKS(kid)
+	if err != nil {
+		t.Fatalf("ExportJWKS: %v", err)
+	}
+	return engine, jwks
 }
 
 func TestWorkerConfig_Defaults(t *testing.T) {
@@ -248,6 +268,8 @@ func TestNewWorkerWithConfig(t *testing.T) {
 }
 
 func TestWorker_DeliverMessage_Success(t *testing.T) {
+	engine, jwks := makeTestEngineAndJWKS(t, "partner-1")
+
 	// Setup mock server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "POST", r.Method)
@@ -267,20 +289,19 @@ func TestWorker_DeliverMessage_Success(t *testing.T) {
 				PartnerID:       "partner-1",
 				Name:            "Test Partner",
 				MessageEndpoint: server.URL,
+				PublicKeyJWKS:   jwks,
 			},
 		},
 	}
 
-	// Create worker
-	worker := NewWorker(msgRepo, partnerRepo, nil)
+	// Worker with real crypto engine so SignAndEncrypt works.
+	worker := NewWorker(msgRepo, partnerRepo, engine)
+	worker.SetNodeID("urn:test:sender")
 
-	// Create test message
 	msg := createTestMessage("msg-1", "partner-1")
 	msgRepo.messages[msg.MessageID] = msg
 
-	// Deliver message
 	err := worker.deliverMessage(context.Background(), msg)
-
 	assert.NoError(t, err)
 }
 
@@ -321,6 +342,8 @@ func TestWorker_DeliverMessage_NoEndpoint(t *testing.T) {
 }
 
 func TestWorker_DeliverMessage_HTTPError(t *testing.T) {
+	engine, jwks := makeTestEngineAndJWKS(t, "partner-1")
+
 	// Mock server returning 500 error
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -334,11 +357,13 @@ func TestWorker_DeliverMessage_HTTPError(t *testing.T) {
 			"partner-1": {
 				PartnerID:       "partner-1",
 				MessageEndpoint: server.URL,
+				PublicKeyJWKS:   jwks,
 			},
 		},
 	}
 
-	worker := NewWorker(msgRepo, partnerRepo, nil)
+	worker := NewWorker(msgRepo, partnerRepo, engine)
+	worker.SetNodeID("urn:test:sender")
 	msg := createTestMessage("msg-1", "partner-1")
 
 	err := worker.deliverMessage(context.Background(), msg)

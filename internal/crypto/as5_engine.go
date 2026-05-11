@@ -303,17 +303,27 @@ func (e *AS5Engine) VerifyJMDN(jwsCompact string, senderPublicKey *rsa.PublicKey
 	return &receipt, nil
 }
 
-// ExportJWKS exports the public key as a JWKS
-func (e *AS5Engine) ExportJWKS(keyID string) (string, error) {
-	jwk := jose.JSONWebKey{
+// ExportJWKS exports the node's public key as a JWKS document.
+// The same RSA key material is published twice with distinct use/alg
+// pairs ("sig" for RS256 signatures, "enc" for RSA-OAEP encryption)
+// so peers consuming this JWKS can pick the correct key by `use`.
+// keyIDBase is used as a prefix; "-sig" and "-enc" are appended.
+func (e *AS5Engine) ExportJWKS(keyIDBase string) (string, error) {
+	sigJWK := jose.JSONWebKey{
 		Key:       e.publicKey,
-		KeyID:     keyID,
+		KeyID:     keyIDBase + "-sig",
 		Algorithm: string(jose.RS256),
 		Use:       "sig",
 	}
+	encJWK := jose.JSONWebKey{
+		Key:       e.publicKey,
+		KeyID:     keyIDBase + "-enc",
+		Algorithm: string(jose.RSA_OAEP),
+		Use:       "enc",
+	}
 
 	jwks := jose.JSONWebKeySet{
-		Keys: []jose.JSONWebKey{jwk},
+		Keys: []jose.JSONWebKey{sigJWK, encJWK},
 	}
 
 	jwksJSON, err := json.MarshalIndent(jwks, "", "  ")
@@ -344,7 +354,9 @@ func ParsePublicKeyFromPEM(publicKeyPEM string) (*rsa.PublicKey, error) {
 	return publicKey, nil
 }
 
-// ParsePublicKeyFromJWKS extracts the first RSA public key from a JWKS
+// ParsePublicKeyFromJWKS extracts the first RSA public key from a JWKS.
+// Used for generic validation; callers that need a specific key (sig vs enc)
+// should use ParsePublicKeyFromJWKSByUse.
 func ParsePublicKeyFromJWKS(jwksJSON string) (*rsa.PublicKey, error) {
 	var jwks jose.JSONWebKeySet
 	if err := json.Unmarshal([]byte(jwksJSON), &jwks); err != nil {
@@ -363,4 +375,33 @@ func ParsePublicKeyFromJWKS(jwksJSON string) (*rsa.PublicKey, error) {
 	}
 
 	return publicKey, nil
+}
+
+// ParsePublicKeyFromJWKSByUse extracts the first RSA public key with a
+// matching `use` field ("sig" or "enc") from a JWKS document. Falls back to
+// the first key in the set when no key declares the requested use — useful
+// for nodes that publish a single dual-purpose key.
+func ParsePublicKeyFromJWKSByUse(jwksJSON, use string) (*rsa.PublicKey, error) {
+	var jwks jose.JSONWebKeySet
+	if err := json.Unmarshal([]byte(jwksJSON), &jwks); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal JWKS: %w", err)
+	}
+	if len(jwks.Keys) == 0 {
+		return nil, fmt.Errorf("no keys found in JWKS")
+	}
+
+	for _, jwk := range jwks.Keys {
+		if jwk.Use == use {
+			if pk, ok := jwk.Key.(*rsa.PublicKey); ok {
+				return pk, nil
+			}
+		}
+	}
+	// Fallback: first RSA key.
+	for _, jwk := range jwks.Keys {
+		if pk, ok := jwk.Key.(*rsa.PublicKey); ok {
+			return pk, nil
+		}
+	}
+	return nil, fmt.Errorf("no RSA public key found in JWKS")
 }

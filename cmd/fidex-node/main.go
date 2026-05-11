@@ -124,6 +124,7 @@ func buildHandlers(c *container.Container) *api.Handlers {
 		UserRepo:         c.UserRepo,
 		SessionRepo:      c.SessionRepo,
 		AuthService:      c.AuthService,
+		CryptoService:    c.CryptoService,
 		DiscoveryService: c.DiscoveryService,
 		WebSocketHub:     c.WebSocketHub,
 	}

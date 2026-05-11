@@ -6,10 +6,14 @@ package constants
 
 const (
 	// External B2B API Routes (Public-facing)
+	// IMPORTANT: these absolute paths MUST match how the public router actually
+	// mounts the inbound/receipt/register handlers (see handlers.go, which
+	// composes APIV1 + RouteInboundRel etc.). GenerateAS5Config publishes
+	// these constants so partner peers will POST here directly.
 	RouteHealth           = "/health"
-	RouteInbound          = "/b2b/v1/inbound"
-	RouteReceipt          = "/b2b/v1/receipt"
-	RouteRegister         = "/b2b/v1/register"
+	RouteInbound          = "/api/v1/inbound"
+	RouteReceipt          = "/api/v1/receipt"
+	RouteRegister         = "/api/v1/register"
 	RouteJWKS             = "/.well-known/jwks.json"
 	RouteAS5Configuration = "/.well-known/as5-configuration"
 

@@ -163,6 +163,7 @@ func (c *Container) initWorkers() error {
 		c.PartnerRepo,
 		c.CryptoService,
 	)
+	c.QueueWorker.SetNodeID(c.Config.NodeID)
 	c.QueueWorker.Start()
 
 	// Initialize WebSocket hub

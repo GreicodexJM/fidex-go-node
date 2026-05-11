@@ -89,7 +89,7 @@ func (h *Handlers) SetupPublicRouter() *chi.Mux {
 	})
 
 	// Discovery endpoints
-	r.Get(constants.RouteJWKS, jwksHandler)
+	r.Get(constants.RouteJWKS, h.jwksHandler)
 	r.Get(constants.RouteAS5Configuration, h.as5ConfigHandler)
 
 	return r

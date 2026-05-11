@@ -3,6 +3,7 @@ package api
 import (
 	"fidex-node/internal/auth"
 	"fidex-node/internal/config"
+	"fidex-node/internal/crypto"
 	"fidex-node/internal/dashboard"
 	"fidex-node/internal/discovery"
 	"fidex-node/internal/domain"
@@ -25,6 +26,7 @@ type Handlers struct {
 	UserRepo         domain.UserRepository
 	SessionRepo      domain.SessionRepository
 	AuthService      *auth.Service
+	CryptoService    *crypto.AS5Engine
 	DiscoveryService *discovery.DiscoveryService
 	WebSocketHub     *dashboard.Hub
 }

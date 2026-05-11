@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"fidex-node/internal/crypto"
 	"fidex-node/internal/domain"
 
 	"github.com/google/uuid"
@@ -41,21 +42,58 @@ func (h *Handlers) inboundHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For now, we accept the envelope and store it as-is
-	// In production, you would decrypt the JWE payload here
-	envelopeBytes, err := json.Marshal(envelope)
-	if err != nil {
-		logger.Error(ctx, "Failed to marshal envelope: %v", err)
-		respondWithError(w, http.StatusInternalServerError, "Failed to process envelope", err)
-		return
+	// Resolve the sender and decrypt+verify the JWE payload. If the sender is
+	// unknown we still persist the envelope for forensic visibility (audit)
+	// but we cannot verify its signature. Spec §5: an unknown sender on
+	// /receive is a soft fail — the node returns 202 and quarantines.
+	storedPayload := ""
+	status := domain.StatusDelivered
+	senderID := envelope.Routing.SenderID
+	if h.CryptoService != nil && h.PartnerRepo != nil {
+		partner, err := h.PartnerRepo.GetByID(ctx, senderID)
+		if err != nil {
+			logger.Warn(ctx, "Inbound from unknown sender %q, quarantining envelope", senderID)
+			status = domain.StatusQuarantined
+		} else if partner.PublicKeyJWKS == "" {
+			logger.Warn(ctx, "Sender %q has no cached JWKS, quarantining envelope", senderID)
+			status = domain.StatusQuarantined
+		} else {
+			senderSigKey, err := crypto.ParsePublicKeyFromJWKSByUse(partner.PublicKeyJWKS, "sig")
+			if err != nil {
+				logger.Error(ctx, "Failed to extract sender signing key: %v", err)
+				status = domain.StatusQuarantined
+			} else {
+				decrypted, err := h.CryptoService.DecryptAndVerify(envelope.Payload, senderSigKey)
+				if err != nil {
+					logger.Error(ctx, "Decrypt+verify failed for message %s: %v", envelope.Routing.MessageID, err)
+					status = domain.StatusQuarantined
+				} else {
+					storedPayload = string(decrypted)
+					logger.Info(ctx, "Decrypted inbound message %s (%d bytes business document)",
+						envelope.Routing.MessageID, len(decrypted))
+				}
+			}
+		}
+	}
+
+	// If we did not (or could not) decrypt, keep the envelope as-is so the
+	// operator can inspect it later.
+	if storedPayload == "" {
+		envelopeBytes, err := json.Marshal(envelope)
+		if err != nil {
+			logger.Error(ctx, "Failed to marshal envelope: %v", err)
+			respondWithError(w, http.StatusInternalServerError, "Failed to process envelope", err)
+			return
+		}
+		storedPayload = string(envelopeBytes)
 	}
 
 	// Create the message record
 	msg := &domain.Message{
 		MessageID: envelope.Routing.MessageID,
 		Direction: domain.DirectionInbound,
-		Status:    domain.StatusDelivered,
-		Payload:   string(envelopeBytes),
+		Status:    status,
+		Payload:   storedPayload,
 		CreatedAt: time.Now(),
 	}
 
@@ -203,26 +241,25 @@ func (h *Handlers) receiptHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // jwksHandler handles GET /.well-known/jwks.json
-// Returns a mock JSON Web Key Set for public key discovery
-func jwksHandler(w http.ResponseWriter, r *http.Request) {
+// Returns the node's real public key as a JWKS document so partners can
+// encrypt messages addressed to this node (spec §5.1).
+func (h *Handlers) jwksHandler(w http.ResponseWriter, r *http.Request) {
 	logger.Info(r.Context(), "JWKS requested from %s", r.RemoteAddr)
 
-	// Mock JWKS response
-	// In production, this would contain the actual public keys from the node's configuration
-	jwks := map[string]interface{}{
-		"keys": []map[string]interface{}{
-			{
-				"kty": "RSA",
-				"use": "enc",
-				"kid": "fidex-node-2024-01",
-				"alg": "RSA-OAEP",
-				"n":   "mock_modulus_base64url_encoded",
-				"e":   "AQAB",
-			},
-		},
+	if h.CryptoService == nil {
+		logger.Error(r.Context(), "Crypto service not initialized")
+		http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	jwksJSON, err := h.CryptoService.ExportJWKS(h.Config.NodeID + ":enc")
+	if err != nil {
+		logger.Error(r.Context(), "Failed to export JWKS: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(jwks)
+	_, _ = w.Write([]byte(jwksJSON))
 }
