@@ -31,10 +31,11 @@ type RoutingHeader struct {
 	ReceiptWebhook string `json:"receipt_webhook,omitempty"`
 }
 
-// FidexEnvelope represents the incoming FideX envelope structure
+// FidexEnvelope represents the incoming FideX envelope structure.
+// JSON keys match the canonical protocol spec §4: routing_header + encrypted_payload.
 type FidexEnvelope struct {
-	Routing RoutingHeader `json:"routing"`
-	Payload string        `json:"payload"` // JWE string
+	Routing RoutingHeader `json:"routing_header"`
+	Payload string        `json:"encrypted_payload"` // JWE string
 }
 
 // JmdnReceipt represents a message disposition notification receipt
@@ -46,10 +47,11 @@ type JmdnReceipt struct {
 	ErrorLog          *string `json:"error_log,omitempty"`
 }
 
-// JmdnEnvelope represents the receipt envelope structure
+// JmdnEnvelope represents the receipt envelope structure.
+// JSON keys match the canonical protocol spec §4: routing_header + encrypted_payload.
 type JmdnEnvelope struct {
-	Routing RoutingHeader `json:"routing"`
-	Payload string        `json:"payload"` // JWS string
+	Routing RoutingHeader `json:"routing_header"`
+	Payload string        `json:"encrypted_payload"` // JWS string
 }
 
 // ErrorResponse represents a standard error response
@@ -88,23 +90,23 @@ func validateFidexEnvelope(envelope *FidexEnvelope) error {
 	}
 
 	if envelope.Routing.FidexVersion == "" {
-		return fmt.Errorf("routing.fidex_version is required")
+		return fmt.Errorf("routing_header.fidex_version is required")
 	}
 
 	if envelope.Routing.MessageID == "" {
-		return fmt.Errorf("routing.message_id is required")
+		return fmt.Errorf("routing_header.message_id is required")
 	}
 
 	if envelope.Routing.SenderID == "" {
-		return fmt.Errorf("routing.sender_id is required")
+		return fmt.Errorf("routing_header.sender_id is required")
 	}
 
 	if envelope.Routing.ReceiverID == "" {
-		return fmt.Errorf("routing.receiver_id is required")
+		return fmt.Errorf("routing_header.receiver_id is required")
 	}
 
 	if envelope.Payload == "" {
-		return fmt.Errorf("payload is required")
+		return fmt.Errorf("encrypted_payload is required")
 	}
 
 	return nil
@@ -117,11 +119,11 @@ func validateJmdnEnvelope(envelope *JmdnEnvelope) error {
 	}
 
 	if envelope.Routing.MessageID == "" {
-		return fmt.Errorf("routing.message_id is required")
+		return fmt.Errorf("routing_header.message_id is required")
 	}
 
 	if envelope.Payload == "" {
-		return fmt.Errorf("payload is required")
+		return fmt.Errorf("encrypted_payload is required")
 	}
 
 	return nil

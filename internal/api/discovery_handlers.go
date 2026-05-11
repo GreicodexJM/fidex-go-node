@@ -17,9 +17,11 @@ func (h *Handlers) as5ConfigHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	discConfig := discovery.NodeConfig{
-		NodeID:           h.Config.NodeID,
-		OrganizationName: h.Config.OrganizationName,
-		BaseURL:          getBaseURL(r),
+		NodeID:                 h.Config.NodeID,
+		OrganizationName:       h.Config.OrganizationName,
+		BaseURL:                getBaseURL(r),
+		PublicDomain:           h.Config.PublicDomain,
+		SupportedDocumentTypes: []string{},
 	}
 
 	as5Config := discovery.GenerateAS5Config(discConfig)

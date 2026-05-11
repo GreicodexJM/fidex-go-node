@@ -46,8 +46,9 @@ type RoutingHeader struct {
 	Timestamp    string `json:"timestamp"`
 }
 
-// FidexEnvelope represents a complete FideX AS5 message
+// FidexEnvelope represents a complete FideX AS5 message.
+// JSON keys match the canonical protocol spec §4: routing_header + encrypted_payload.
 type FidexEnvelope struct {
-	Routing RoutingHeader `json:"routing"`
-	Payload string        `json:"payload"` // JWE encrypted payload
+	Routing RoutingHeader `json:"routing_header"`
+	Payload string        `json:"encrypted_payload"` // JWE encrypted payload
 }

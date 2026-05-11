@@ -60,15 +60,15 @@ func (ds *DiscoveryService) InitiatePartnerHandshake(ctx context.Context, discov
 	logger.Info(ctx, "Step 1 complete: Retrieved config from %s", remoteConfig.OrganizationName)
 
 	// Step 2: Fetch and cache partner's public keys
-	logger.Info(ctx, "Step 2: Fetching partner JWKS from %s", remoteConfig.JWKSUri)
-	jwksData, err := FetchAndCachePartnerKeys(remoteConfig.JWKSUri)
+	logger.Info(ctx, "Step 2: Fetching partner JWKS from %s", remoteConfig.Endpoints.JWKS)
+	jwksData, err := FetchAndCachePartnerKeys(remoteConfig.Endpoints.JWKS)
 	if err != nil {
 		return nil, fmt.Errorf("step 2 failed - could not fetch JWKS: %w", err)
 	}
 	logger.Info(ctx, "Step 2 complete: Cached partner's public keys")
 
 	// Step 3: Generate security token and send registration request
-	logger.Info(ctx, "Step 3: Registering with partner via %s", remoteConfig.WebhookRegistrationEndpoint)
+	logger.Info(ctx, "Step 3: Registering with partner via %s", remoteConfig.Endpoints.Register)
 	token, err := ds.tokenStore.GenerateToken(30 * time.Minute)
 	if err != nil {
 		return nil, fmt.Errorf("step 3 failed - could not generate token: %w", err)
@@ -76,17 +76,17 @@ func (ds *DiscoveryService) InitiatePartnerHandshake(ctx context.Context, discov
 
 	ownConfig := GenerateAS5Config(ds.nodeConfig)
 	regRequest := RegistrationRequest{
-		NodeID:                      ownConfig.Issuer,
+		NodeID:                      ownConfig.NodeID,
 		OrganizationName:            ownConfig.OrganizationName,
-		JWKSUri:                     ownConfig.JWKSUri,
-		MessageEndpoint:             ownConfig.MessageEndpoint,
-		MDNReceiptEndpoint:          ownConfig.MDNReceiptEndpoint,
-		AlgorithmsSupported:         ownConfig.AlgorithmsSupported,
-		WebhookRegistrationEndpoint: ownConfig.WebhookRegistrationEndpoint,
+		JWKSUri:                     ownConfig.Endpoints.JWKS,
+		MessageEndpoint:             ownConfig.Endpoints.ReceiveMessage,
+		MDNReceiptEndpoint:          ownConfig.Endpoints.ReceiveReceipt,
+		AlgorithmsSupported:         []string{ownConfig.Security.SignatureAlgorithm, ownConfig.Security.EncryptionAlgorithm, ownConfig.Security.ContentEncryption},
+		WebhookRegistrationEndpoint: ownConfig.Endpoints.Register,
 		SecurityToken:               token,
 	}
 
-	if err := ds.sendRegistrationRequest(remoteConfig.WebhookRegistrationEndpoint, regRequest); err != nil {
+	if err := ds.sendRegistrationRequest(remoteConfig.Endpoints.Register, regRequest); err != nil {
 		return nil, fmt.Errorf("step 3 failed - registration rejected: %w", err)
 	}
 	logger.Info(ctx, "Step 3 complete: Registration accepted by partner")
@@ -95,11 +95,11 @@ func (ds *DiscoveryService) InitiatePartnerHandshake(ctx context.Context, discov
 	logger.Info(ctx, "Step 4: Creating partner profile in database")
 	now := time.Now()
 	partner := &domain.Partner{
-		PartnerID:          remoteConfig.Issuer,
+		PartnerID:          remoteConfig.NodeID,
 		Name:               remoteConfig.OrganizationName,
-		JWKSUrl:            remoteConfig.JWKSUri,
-		MessageEndpoint:    remoteConfig.MessageEndpoint,
-		MDNReceiptEndpoint: remoteConfig.MDNReceiptEndpoint,
+		JWKSUrl:            remoteConfig.Endpoints.JWKS,
+		MessageEndpoint:    remoteConfig.Endpoints.ReceiveMessage,
+		MDNReceiptEndpoint: remoteConfig.Endpoints.ReceiveReceipt,
 		PublicKeyJWKS:      jwksData,
 		LastKeyRefresh:     &now,
 	}

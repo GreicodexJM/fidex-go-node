@@ -141,9 +141,11 @@ func (c *Container) initDiscoveryService() error {
 	// Build the base URL from the public domain and port
 	baseURL := fmt.Sprintf("https://%s:%d", c.Config.PublicDomain, c.Config.PublicAPIPort)
 	nodeConfig := discovery.NodeConfig{
-		NodeID:           c.Config.NodeID,
-		OrganizationName: c.Config.OrganizationName,
-		BaseURL:          baseURL,
+		NodeID:                 c.Config.NodeID,
+		OrganizationName:       c.Config.OrganizationName,
+		BaseURL:                baseURL,
+		PublicDomain:           c.Config.PublicDomain,
+		SupportedDocumentTypes: []string{},
 	}
 
 	// Create discovery service

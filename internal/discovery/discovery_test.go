@@ -53,51 +53,77 @@ func (env *testEnv) cleanup() {
 	os.Remove(env.dbPath + "-wal")
 }
 
-// TestGenerateAS5Config tests AS5 configuration generation
+// TestGenerateAS5Config tests AS5 configuration generation against the spec schema.
 func TestGenerateAS5Config(t *testing.T) {
 	config := NodeConfig{
 		NodeID:           "urn:gln:test:node-a",
 		OrganizationName: "Test Node A",
 		BaseURL:          "https://node-a.example.com",
+		PublicDomain:     "node-a.example.com",
 	}
 
 	as5Config := GenerateAS5Config(config)
 
-	if as5Config.Issuer != config.NodeID {
-		t.Errorf("Expected issuer %s, got %s", config.NodeID, as5Config.Issuer)
+	if as5Config.NodeID != config.NodeID {
+		t.Errorf("Expected node_id %s, got %s", config.NodeID, as5Config.NodeID)
 	}
 	if as5Config.OrganizationName != config.OrganizationName {
-		t.Errorf("Expected org name %s, got %s", config.OrganizationName, as5Config.OrganizationName)
+		t.Errorf("Expected organization_name %s, got %s", config.OrganizationName, as5Config.OrganizationName)
 	}
-	if as5Config.JWKSUri != config.BaseURL+constants.RouteJWKS {
-		t.Errorf("Unexpected JWKS URI: %s", as5Config.JWKSUri)
+	if as5Config.PublicDomain != config.PublicDomain {
+		t.Errorf("Expected public_domain %s, got %s", config.PublicDomain, as5Config.PublicDomain)
 	}
-	if as5Config.MessageEndpoint != config.BaseURL+constants.RouteInbound {
-		t.Errorf("Unexpected message endpoint: %s", as5Config.MessageEndpoint)
+	if as5Config.FidexVersion != "1.0" {
+		t.Errorf("Expected fidex_version 1.0, got %s", as5Config.FidexVersion)
 	}
-	if as5Config.MDNReceiptEndpoint != config.BaseURL+constants.RouteReceipt {
-		t.Errorf("Unexpected MDN receipt endpoint: %s", as5Config.MDNReceiptEndpoint)
+	if len(as5Config.SupportedVersions) == 0 {
+		t.Error("supported_versions must be non-empty")
 	}
-	if as5Config.WebhookRegistrationEndpoint != config.BaseURL+constants.RouteRegister {
-		t.Errorf("Unexpected webhook endpoint: %s", as5Config.WebhookRegistrationEndpoint)
+	if as5Config.Endpoints.JWKS != config.BaseURL+constants.RouteJWKS {
+		t.Errorf("Unexpected endpoints.jwks: %s", as5Config.Endpoints.JWKS)
 	}
-	if len(as5Config.AlgorithmsSupported) == 0 {
-		t.Error("No algorithms supported")
+	if as5Config.Endpoints.ReceiveMessage != config.BaseURL+constants.RouteInbound {
+		t.Errorf("Unexpected endpoints.receive_message: %s", as5Config.Endpoints.ReceiveMessage)
+	}
+	if as5Config.Endpoints.ReceiveReceipt != config.BaseURL+constants.RouteReceipt {
+		t.Errorf("Unexpected endpoints.receive_receipt: %s", as5Config.Endpoints.ReceiveReceipt)
+	}
+	if as5Config.Endpoints.Register != config.BaseURL+constants.RouteRegister {
+		t.Errorf("Unexpected endpoints.register: %s", as5Config.Endpoints.Register)
+	}
+	if as5Config.Security.SignatureAlgorithm == "" {
+		t.Error("security.signature_algorithm is required")
+	}
+	if as5Config.Security.EncryptionAlgorithm == "" {
+		t.Error("security.encryption_algorithm is required")
+	}
+	if as5Config.Security.MinimumKeySize <= 0 {
+		t.Error("security.minimum_key_size must be positive")
 	}
 
 	t.Log("✓ AS5 config generation successful")
 }
 
-// TestFetchAS5Config tests fetching AS5 configuration from a remote server
+// TestFetchAS5Config tests fetching AS5 configuration from a remote server.
 func TestFetchAS5Config(t *testing.T) {
 	mockConfig := AS5Configuration{
-		Issuer:                      "urn:gln:test:remote-node",
-		OrganizationName:            "Remote Node",
-		JWKSUri:                     "https://remote.example.com/.well-known/jwks.json",
-		MessageEndpoint:             "https://remote.example.com/api/v1/inbound",
-		MDNReceiptEndpoint:          "https://remote.example.com/api/v1/receipt",
-		AlgorithmsSupported:         []string{"RS256", "RSA-OAEP", "A256GCM"},
-		WebhookRegistrationEndpoint: "https://remote.example.com/api/v1/register",
+		FidexVersion:      "1.0",
+		SupportedVersions: []string{"1.0"},
+		NodeID:            "urn:gln:test:remote-node",
+		OrganizationName:  "Remote Node",
+		PublicDomain:      "remote.example.com",
+		Endpoints: AS5Endpoints{
+			JWKS:           "https://remote.example.com/.well-known/jwks.json",
+			ReceiveMessage: "https://remote.example.com/api/v1/receive",
+			ReceiveReceipt: "https://remote.example.com/api/v1/receipt",
+			Register:       "https://remote.example.com/api/v1/register",
+		},
+		Security: AS5SecurityConfig{
+			SignatureAlgorithm:  "RS256",
+			EncryptionAlgorithm: "RSA-OAEP",
+			ContentEncryption:   "A256GCM",
+			MinimumKeySize:      2048,
+		},
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -111,11 +137,14 @@ func TestFetchAS5Config(t *testing.T) {
 		t.Fatalf("Failed to fetch AS5 config: %v", err)
 	}
 
-	if fetchedConfig.Issuer != mockConfig.Issuer {
-		t.Errorf("Expected issuer %s, got %s", mockConfig.Issuer, fetchedConfig.Issuer)
+	if fetchedConfig.NodeID != mockConfig.NodeID {
+		t.Errorf("Expected node_id %s, got %s", mockConfig.NodeID, fetchedConfig.NodeID)
 	}
 	if fetchedConfig.OrganizationName != mockConfig.OrganizationName {
-		t.Errorf("Expected org name %s, got %s", mockConfig.OrganizationName, fetchedConfig.OrganizationName)
+		t.Errorf("Expected organization_name %s, got %s", mockConfig.OrganizationName, fetchedConfig.OrganizationName)
+	}
+	if fetchedConfig.Endpoints.ReceiveMessage != mockConfig.Endpoints.ReceiveMessage {
+		t.Errorf("Expected endpoints.receive_message %s, got %s", mockConfig.Endpoints.ReceiveMessage, fetchedConfig.Endpoints.ReceiveMessage)
 	}
 
 	t.Log("✓ AS5 config fetching successful")
@@ -217,13 +246,23 @@ func TestCompleteDiscoveryHandshake(t *testing.T) {
 		case "/.well-known/as5-configuration":
 			t.Log("Step 1: Node A fetching Node B's AS5 configuration")
 			config := AS5Configuration{
-				Issuer:                      "urn:gln:test:node-b",
-				OrganizationName:            "Test Node B",
-				JWKSUri:                     nodeBServer.URL + "/.well-known/jwks.json",
-				MessageEndpoint:             nodeBServer.URL + "/api/v1/inbound",
-				MDNReceiptEndpoint:          nodeBServer.URL + "/api/v1/receipt",
-				AlgorithmsSupported:         []string{"RS256", "RSA-OAEP", "A256GCM"},
-				WebhookRegistrationEndpoint: nodeBServer.URL + "/api/v1/register",
+				FidexVersion:      "1.0",
+				SupportedVersions: []string{"1.0"},
+				NodeID:            "urn:gln:test:node-b",
+				OrganizationName:  "Test Node B",
+				PublicDomain:      "test-node-b.local",
+				Endpoints: AS5Endpoints{
+					JWKS:           nodeBServer.URL + "/.well-known/jwks.json",
+					ReceiveMessage: nodeBServer.URL + "/api/v1/receive",
+					ReceiveReceipt: nodeBServer.URL + "/api/v1/receipt",
+					Register:       nodeBServer.URL + "/api/v1/register",
+				},
+				Security: AS5SecurityConfig{
+					SignatureAlgorithm:  "RS256",
+					EncryptionAlgorithm: "RSA-OAEP",
+					ContentEncryption:   "A256GCM",
+					MinimumKeySize:      2048,
+				},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(config)
@@ -286,7 +325,7 @@ func TestCompleteDiscoveryHandshake(t *testing.T) {
 	if partner.Name != "Test Node B" {
 		t.Errorf("Expected partner name 'Test Node B', got %s", partner.Name)
 	}
-	if partner.MessageEndpoint != nodeBServer.URL+"/api/v1/inbound" {
+	if partner.MessageEndpoint != nodeBServer.URL+"/api/v1/receive" {
 		t.Errorf("Unexpected message endpoint: %s", partner.MessageEndpoint)
 	}
 	if partner.PublicKeyJWKS == "" {
