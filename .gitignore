@@ -1,0 +1,15 @@
+# Binaries
+/fidex-node
+*.exe
+*.test
+*.out
+
+# Local state
+fidex_local.db
+*.log
+cookie_*.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp

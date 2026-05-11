@@ -2,13 +2,14 @@ package discovery
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"time"
 
-	"fidex-node/internal/db"
+	"fidex-node/internal/domain"
 )
 
 // RegistrationRequest represents the payload sent to partner webhook registration endpoint
@@ -31,20 +32,22 @@ type RegistrationResponse struct {
 
 // DiscoveryService handles partner discovery and registration
 type DiscoveryService struct {
-	nodeConfig NodeConfig
-	tokenStore *TokenStore
+	nodeConfig  NodeConfig
+	tokenStore  *TokenStore
+	partnerRepo domain.PartnerRepository
 }
 
-// NewDiscoveryService creates a new discovery service
-func NewDiscoveryService(nodeConfig NodeConfig, tokenStore *TokenStore) *DiscoveryService {
+// NewDiscoveryService creates a new discovery service with an injected partner repository
+func NewDiscoveryService(nodeConfig NodeConfig, tokenStore *TokenStore, partnerRepo domain.PartnerRepository) *DiscoveryService {
 	return &DiscoveryService{
-		nodeConfig: nodeConfig,
-		tokenStore: tokenStore,
+		nodeConfig:  nodeConfig,
+		tokenStore:  tokenStore,
+		partnerRepo: partnerRepo,
 	}
 }
 
 // InitiatePartnerHandshake performs the complete 4-step discovery process
-func (ds *DiscoveryService) InitiatePartnerHandshake(discoveryURL string) (*db.TradingPartner, error) {
+func (ds *DiscoveryService) InitiatePartnerHandshake(ctx context.Context, discoveryURL string) (*domain.Partner, error) {
 	// Step 1: Fetch AS5 configuration from remote node
 	log.Printf("Step 1: Fetching AS5 configuration from %s", discoveryURL)
 	remoteConfig, err := FetchAS5Config(discoveryURL)
@@ -88,7 +91,7 @@ func (ds *DiscoveryService) InitiatePartnerHandshake(discoveryURL string) (*db.T
 	// Step 4: Create partner profile in local database
 	log.Printf("Step 4: Creating partner profile in database")
 	now := time.Now()
-	partner := &db.TradingPartner{
+	partner := &domain.Partner{
 		PartnerID:          remoteConfig.Issuer,
 		Name:               remoteConfig.OrganizationName,
 		JWKSUrl:            remoteConfig.JWKSUri,
@@ -98,7 +101,7 @@ func (ds *DiscoveryService) InitiatePartnerHandshake(discoveryURL string) (*db.T
 		LastKeyRefresh:     &now,
 	}
 
-	if err := db.CreatePartner(partner); err != nil {
+	if err := ds.partnerRepo.Create(ctx, partner); err != nil {
 		return nil, fmt.Errorf("step 4 failed - could not create partner: %w", err)
 	}
 	log.Printf("Step 4 complete: Partner profile created for %s", partner.Name)
@@ -141,7 +144,7 @@ func (ds *DiscoveryService) sendRegistrationRequest(webhookURL string, req Regis
 }
 
 // HandleWebhookRegistration processes incoming registration requests from partners
-func (ds *DiscoveryService) HandleWebhookRegistration(req RegistrationRequest) error {
+func (ds *DiscoveryService) HandleWebhookRegistration(ctx context.Context, req RegistrationRequest) error {
 	// Validate security token
 	if !ds.tokenStore.ValidateAndConsume(req.SecurityToken) {
 		return fmt.Errorf("invalid or expired security token")
@@ -160,7 +163,7 @@ func (ds *DiscoveryService) HandleWebhookRegistration(req RegistrationRequest) e
 
 	// Create partner profile
 	now := time.Now()
-	partner := &db.TradingPartner{
+	partner := &domain.Partner{
 		PartnerID:          req.NodeID,
 		Name:               req.OrganizationName,
 		JWKSUrl:            req.JWKSUri,
@@ -171,17 +174,17 @@ func (ds *DiscoveryService) HandleWebhookRegistration(req RegistrationRequest) e
 	}
 
 	// Check if partner already exists
-	existingPartner, err := db.GetPartnerByID(req.NodeID)
+	existingPartner, err := ds.partnerRepo.GetByID(ctx, req.NodeID)
 	if err == nil && existingPartner != nil {
 		// Update existing partner
 		partner.ID = existingPartner.ID
-		if err := db.UpdatePartner(partner); err != nil {
+		if err := ds.partnerRepo.Update(ctx, partner); err != nil {
 			return fmt.Errorf("failed to update partner: %w", err)
 		}
 		log.Printf("Updated existing partner: %s", partner.Name)
 	} else {
 		// Create new partner
-		if err := db.CreatePartner(partner); err != nil {
+		if err := ds.partnerRepo.Create(ctx, partner); err != nil {
 			return fmt.Errorf("failed to create partner: %w", err)
 		}
 		log.Printf("Created new partner: %s", partner.Name)

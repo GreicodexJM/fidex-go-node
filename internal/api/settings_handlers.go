@@ -8,7 +8,6 @@ import (
 
 	"fidex-node/internal/auth"
 	"fidex-node/internal/crypto"
-	"fidex-node/internal/db"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -134,7 +133,7 @@ func rotateKeysHandler(w http.ResponseWriter, r *http.Request) {
 
 // listUsersHandler handles GET /api/settings/users
 func listUsersHandler(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.DB.Query(`SELECT id, username, created_at FROM users ORDER BY created_at DESC`)
+	rows, err := DB.Query(`SELECT id, username, created_at FROM users ORDER BY created_at DESC`)
 	if err != nil {
 		log.Printf("Failed to query users: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to load users", err)
@@ -179,7 +178,7 @@ func createUserHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create user
-	user, err := auth.CreateUser(req.Username, hashedPassword)
+	user, err := AuthSvc.CreateUser(r.Context(), req.Username, hashedPassword)
 	if err != nil {
 		log.Printf("Failed to create user: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to create user (username may already exist)", err)
@@ -210,7 +209,7 @@ func deleteUserHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Delete user
-	_, err := db.DB.Exec(`DELETE FROM users WHERE id = ?`, userID)
+	_, err := DB.Exec(`DELETE FROM users WHERE id = ?`, userID)
 	if err != nil {
 		log.Printf("Failed to delete user: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to delete user", err)
@@ -218,7 +217,7 @@ func deleteUserHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Delete user's sessions
-	_, err = db.DB.Exec(`DELETE FROM sessions WHERE user_id = ?`, userID)
+	_, err = DB.Exec(`DELETE FROM sessions WHERE user_id = ?`, userID)
 	if err != nil {
 		log.Printf("Failed to delete user sessions: %v", err)
 	}
@@ -261,7 +260,7 @@ func updatePasswordHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update password
-	_, err = db.DB.Exec(`UPDATE users SET password_hash = ? WHERE id = ?`, newHash, currentUser.ID)
+	_, err = DB.Exec(`UPDATE users SET password_hash = ? WHERE id = ?`, newHash, currentUser.ID)
 	if err != nil {
 		log.Printf("Failed to update password: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to update password", err)
@@ -278,7 +277,7 @@ func updatePasswordHandler(w http.ResponseWriter, r *http.Request) {
 
 // listPartnersDetailedHandler handles GET /api/settings/partners
 func listPartnersDetailedHandler(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.DB.Query(`
+	rows, err := DB.Query(`
 		SELECT id, partner_id, name, jwks_url, last_key_refresh, created_at
 		FROM trading_partners
 		ORDER BY created_at DESC
@@ -326,7 +325,7 @@ func updatePartnerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update partner name
-	_, err := db.DB.Exec(`UPDATE trading_partners SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, req.Name, partnerID)
+	_, err := DB.Exec(`UPDATE trading_partners SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, req.Name, partnerID)
 	if err != nil {
 		log.Printf("Failed to update partner: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to update partner", err)
@@ -346,7 +345,7 @@ func deletePartnerHandler(w http.ResponseWriter, r *http.Request) {
 	partnerID := chi.URLParam(r, "id")
 
 	// Delete partner
-	_, err := db.DB.Exec(`DELETE FROM trading_partners WHERE id = ?`, partnerID)
+	_, err := DB.Exec(`DELETE FROM trading_partners WHERE id = ?`, partnerID)
 	if err != nil {
 		log.Printf("Failed to delete partner: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to delete partner", err)

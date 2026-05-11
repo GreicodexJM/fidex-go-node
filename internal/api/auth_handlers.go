@@ -1,12 +1,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
 
 	"fidex-node/internal/auth"
-	"fidex-node/internal/db"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -35,8 +35,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get user from database
-	user, err := auth.GetUserByUsername(req.Username)
+	user, err := AuthSvc.GetUserByUsername(r.Context(), req.Username)
 	if err != nil {
 		log.Printf("Login failed: user not found: %s", req.Username)
 		respondWithJSON(w, http.StatusUnauthorized, LoginResponse{
@@ -46,7 +45,6 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify password
 	if err := auth.VerifyPassword(user.PasswordHash, req.Password); err != nil {
 		log.Printf("Login failed: invalid password for user: %s", req.Username)
 		respondWithJSON(w, http.StatusUnauthorized, LoginResponse{
@@ -56,8 +54,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create session
-	session, err := auth.CreateSession(user.ID)
+	session, err := AuthSvc.CreateSession(r.Context(), user.ID)
 	if err != nil {
 		log.Printf("Failed to create session: %v", err)
 		respondWithJSON(w, http.StatusInternalServerError, LoginResponse{
@@ -67,7 +64,6 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set session cookie
 	http.SetCookie(w, &http.Cookie{
 		Name:     auth.SessionCookieName,
 		Value:    session.SessionID,
@@ -88,14 +84,11 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 
 // logoutHandler handles POST /api/auth/logout
 func logoutHandler(w http.ResponseWriter, r *http.Request) {
-	// Get session cookie
 	cookie, err := r.Cookie(auth.SessionCookieName)
 	if err == nil {
-		// Delete session from database
-		auth.DeleteSession(cookie.Value)
+		_ = AuthSvc.DeleteSession(r.Context(), cookie.Value)
 	}
 
-	// Clear session cookie
 	http.SetCookie(w, &http.Cookie{
 		Name:     auth.SessionCookieName,
 		Value:    "",
@@ -134,23 +127,19 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 }
 
 // InitializeDefaultUser creates the default admin user if no users exist
-func InitializeDefaultUser() error {
-	// Check if any users exist
-	var count int
-	err := db.DB.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
+func InitializeDefaultUser(ctx context.Context) error {
+	count, err := AuthSvc.CountUsers(ctx)
 	if err != nil {
 		return err
 	}
 
-	// Create default admin user if none exist
 	if count == 0 {
 		hashedPassword, err := auth.HashPassword("admin123")
 		if err != nil {
 			return err
 		}
 
-		_, err = auth.CreateUser("admin", hashedPassword)
-		if err != nil {
+		if _, err := AuthSvc.CreateUser(ctx, "admin", hashedPassword); err != nil {
 			return err
 		}
 

@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"fidex-node/internal/db"
+	"fidex-node/internal/domain"
 
 	"github.com/google/uuid"
 )
@@ -43,16 +43,16 @@ func transmitHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create the message record
-	msg := &db.Message{
+	msg := &domain.Message{
 		MessageID: messageID,
-		Direction: db.DirectionOutbound,
-		Status:    db.StatusQueued,
+		Direction: domain.DirectionOutbound,
+		Status:    domain.StatusQueued,
 		Payload:   string(payloadBytes),
 		CreatedAt: time.Now(),
 	}
 
-	// Save to database
-	if err := db.InsertMessage(msg); err != nil {
+	// Save via repository
+	if err := MessageRepo.Create(r.Context(), msg); err != nil {
 		log.Printf("Failed to insert message: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to queue message", err)
 		return
@@ -63,7 +63,7 @@ func transmitHandler(w http.ResponseWriter, r *http.Request) {
 	// Return success response
 	response := TransmitResponse{
 		MessageID: messageID,
-		Status:    string(db.StatusQueued),
+		Status:    string(domain.StatusQueued),
 	}
 
 	w.Header().Set("Content-Type", "application/json")

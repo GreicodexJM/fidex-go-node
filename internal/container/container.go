@@ -6,10 +6,10 @@ import (
 	"log"
 	"os"
 
+	"fidex-node/internal/auth"
 	"fidex-node/internal/config"
 	"fidex-node/internal/crypto"
 	"fidex-node/internal/dashboard"
-	"fidex-node/internal/db"
 	"fidex-node/internal/discovery"
 	"fidex-node/internal/domain"
 	"fidex-node/internal/queue"
@@ -34,6 +34,7 @@ type Container struct {
 	CryptoService    *crypto.AS5Engine
 	DiscoveryService *discovery.DiscoveryService
 	TokenStore       *discovery.TokenStore
+	AuthService      *auth.Service
 
 	// Workers
 	QueueWorker  *queue.Worker
@@ -61,6 +62,9 @@ func NewContainer(cfg *config.Config) (*Container, error) {
 		return nil, fmt.Errorf("failed to initialize crypto service: %w", err)
 	}
 
+	// Initialize auth service (depends on repos)
+	container.AuthService = auth.NewService(container.SessionRepo, container.UserRepo)
+
 	// Initialize discovery service
 	if err := container.initDiscoveryService(); err != nil {
 		return nil, fmt.Errorf("failed to initialize discovery service: %w", err)
@@ -75,13 +79,20 @@ func NewContainer(cfg *config.Config) (*Container, error) {
 	return container, nil
 }
 
-// initDatabase initializes the database connection and schema
+// initDatabase initializes the database connection and schema using the
+// repository package, with no global state.
 func (c *Container) initDatabase() error {
-	if err := db.InitDB(c.Config.DatabasePath); err != nil {
-		return fmt.Errorf("failed to initialize database: %w", err)
+	conn, err := repository.OpenSQLite(c.Config.DatabasePath)
+	if err != nil {
+		return fmt.Errorf("failed to open database: %w", err)
 	}
 
-	c.DB = db.DB // Get the global DB for now (will be removed after full migration)
+	if err := repository.InitSchema(conn); err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("failed to initialize schema: %w", err)
+	}
+
+	c.DB = conn
 	log.Println("✓ Database initialized")
 	return nil
 }
@@ -132,7 +143,7 @@ func (c *Container) initDiscoveryService() error {
 	}
 
 	// Create discovery service
-	c.DiscoveryService = discovery.NewDiscoveryService(nodeConfig, c.TokenStore)
+	c.DiscoveryService = discovery.NewDiscoveryService(nodeConfig, c.TokenStore, c.PartnerRepo)
 
 	log.Println("✓ Discovery service initialized")
 	return nil
