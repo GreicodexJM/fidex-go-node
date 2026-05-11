@@ -23,7 +23,7 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 
 // inboundHandler handles POST /api/v1/inbound
 // Accepts a FideX JWE envelope from external trading partners
-func inboundHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) inboundHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Received inbound request from %s", r.RemoteAddr)
 
 	// Parse the envelope
@@ -60,7 +60,7 @@ func inboundHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save via repository
-	if err := MessageRepo.Create(r.Context(), msg); err != nil {
+	if err := h.MessageRepo.Create(r.Context(), msg); err != nil {
 		log.Printf("Failed to insert inbound message: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to store message", err)
 		return
@@ -119,7 +119,7 @@ func inboundHandler(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now(),
 	}
 
-	if err := MessageRepo.Create(r.Context(), receiptMsg); err != nil {
+	if err := h.MessageRepo.Create(r.Context(), receiptMsg); err != nil {
 		log.Printf("Failed to queue receipt: %v", err)
 		// We don't fail the request if receipt queuing fails, but we log it
 	} else {
@@ -132,7 +132,7 @@ func inboundHandler(w http.ResponseWriter, r *http.Request) {
 
 // receiptHandler handles POST /api/v1/receipt
 // Accepts asynchronous J-MDN receipts from external trading partners
-func receiptHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) receiptHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Received receipt from %s", r.RemoteAddr)
 
 	// Parse the receipt envelope
@@ -168,7 +168,7 @@ func receiptHandler(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now(),
 	}
 
-	if err := MessageRepo.Create(r.Context(), msg); err != nil {
+	if err := h.MessageRepo.Create(r.Context(), msg); err != nil {
 		log.Printf("Failed to insert receipt: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to store receipt", err)
 		return
@@ -196,7 +196,7 @@ func receiptHandler(w http.ResponseWriter, r *http.Request) {
 				newStatus = domain.StatusFailed
 			}
 
-			if err := MessageRepo.UpdateStatus(r.Context(), receiptPayload.OriginalMessageID, newStatus); err != nil {
+			if err := h.MessageRepo.UpdateStatus(r.Context(), receiptPayload.OriginalMessageID, newStatus); err != nil {
 				log.Printf("Failed to update original message status: %v", err)
 			} else {
 				log.Printf("Updated status of message %s to %s based on receipt", receiptPayload.OriginalMessageID, newStatus)

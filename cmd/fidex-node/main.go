@@ -23,48 +23,74 @@ func main() {
 	log.Println("Starting FideX Edge Node...")
 	log.Println("========================================")
 
-	// 1. Load Configuration (from JSON file, env vars, or CLI args)
+	cfg := mustLoadConfig()
+	ensureKeysExist(cfg)
+	logAPIKeySecurityWarning()
+
+	appContainer := mustInitContainer(cfg)
+	handlers := buildHandlers(appContainer)
+
+	log.Println("Checking for default user...")
+	if err := handlers.InitializeDefaultUser(context.Background()); err != nil {
+		log.Fatalf("Failed to initialize default user: %v", err)
+	}
+
+	fw := mustStartFileWatcher(appContainer)
+	startSessionCleanup(appContainer)
+
+	internalServer, publicServer := mustSetupServers(cfg, handlers)
+
+	log.Println("========================================")
+	log.Println("✓ FideX Edge Node is running!")
+	log.Println("========================================")
+	log.Println("Press Ctrl+C to gracefully shutdown...")
+
+	runWithGracefulShutdown(internalServer, publicServer, fw, appContainer)
+}
+
+// mustLoadConfig loads node configuration or aborts.
+func mustLoadConfig() *config.Config {
 	log.Println("Loading configuration...")
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
-	api.NodeConfig = cfg // Set config for API handlers
 	log.Printf("✓ Configuration loaded (Internal Port: %d, Public Port: %d)", cfg.InternalAPIPort, cfg.PublicAPIPort)
+	return cfg
+}
 
-	// 2. Generate node keys if they don't exist (before container initialization)
-	if _, err := os.Stat(cfg.PrivateKeyPath); os.IsNotExist(err) {
-		log.Println("No private key found, generating RSA key pair...")
-		privateKeyPEM, publicKeyPEM, err := crypto.GenerateKeyPair()
-		if err != nil {
-			log.Fatalf("Failed to generate key pair: %v", err)
-		}
-
-		// Create keys directory if it doesn't exist
-		if err := os.MkdirAll("./keys", 0700); err != nil {
-			log.Fatalf("Failed to create keys directory: %v", err)
-		}
-
-		// Save private key
-		if err := os.WriteFile(cfg.PrivateKeyPath, []byte(privateKeyPEM), 0600); err != nil {
-			log.Fatalf("Failed to save private key: %v", err)
-		}
-
-		// Save public key
-		if err := os.WriteFile(cfg.PublicKeyPath, []byte(publicKeyPEM), 0644); err != nil {
-			log.Fatalf("Failed to save public key: %v", err)
-		}
-
-		log.Println("✓ RSA key pair generated and saved")
-		log.Println("========================================")
-		log.Println("⚠ IMPORTANT: New RSA key pair generated")
-		log.Printf("  Public key saved to: %s", cfg.PublicKeyPath)
-		log.Printf("  Private key saved to: %s (keep this secure!)", cfg.PrivateKeyPath)
-		log.Println("  Share your public key with trading partners via the JWKS endpoint")
-		log.Println("========================================")
+// ensureKeysExist generates the node's RSA key pair on first run.
+func ensureKeysExist(cfg *config.Config) {
+	if _, err := os.Stat(cfg.PrivateKeyPath); !os.IsNotExist(err) {
+		return
 	}
 
-	// Warn about API key security on first run
+	log.Println("No private key found, generating RSA key pair...")
+	privateKeyPEM, publicKeyPEM, err := crypto.GenerateKeyPair()
+	if err != nil {
+		log.Fatalf("Failed to generate key pair: %v", err)
+	}
+
+	if err := os.MkdirAll("./keys", 0700); err != nil {
+		log.Fatalf("Failed to create keys directory: %v", err)
+	}
+	if err := os.WriteFile(cfg.PrivateKeyPath, []byte(privateKeyPEM), 0600); err != nil {
+		log.Fatalf("Failed to save private key: %v", err)
+	}
+	if err := os.WriteFile(cfg.PublicKeyPath, []byte(publicKeyPEM), 0644); err != nil {
+		log.Fatalf("Failed to save public key: %v", err)
+	}
+
+	log.Println("✓ RSA key pair generated and saved")
+	log.Println("========================================")
+	log.Println("⚠ IMPORTANT: New RSA key pair generated")
+	log.Printf("  Public key saved to: %s", cfg.PublicKeyPath)
+	log.Printf("  Private key saved to: %s (keep this secure!)", cfg.PrivateKeyPath)
+	log.Println("  Share your public key with trading partners via the JWKS endpoint")
+	log.Println("========================================")
+}
+
+func logAPIKeySecurityWarning() {
 	log.Println("========================================")
 	log.Println("⚠ SECURITY: Internal API Key")
 	log.Println("  Your internal API key is configured and active")
@@ -72,34 +98,39 @@ func main() {
 	log.Println("  Use it in requests: Authorization: Bearer <your-api-key>")
 	log.Println("  NEVER log or expose this key in production!")
 	log.Println("========================================")
+}
 
-	// 3. Initialize Service Container (handles DB, repos, crypto, workers)
+// mustInitContainer wires the service container and aborts on failure.
+func mustInitContainer(cfg *config.Config) *container.Container {
 	log.Println("Initializing service container...")
-	appContainer, err := container.NewContainer(cfg)
+	c, err := container.NewContainer(cfg)
 	if err != nil {
 		log.Fatalf("Failed to initialize container: %v", err)
 	}
 	log.Println("✓ Service container initialized")
+	return c
+}
 
-	// 3b. Wire transitional api-package dependencies. These will be folded into
-	// an APIHandlers struct in Phase 1.4 of the refactor.
-	api.DB = appContainer.DB
-	api.MessageRepo = appContainer.MessageRepo
-	api.PartnerRepo = appContainer.PartnerRepo
-	api.UserRepo = appContainer.UserRepo
-	api.SessionRepo = appContainer.SessionRepo
-	api.AuthSvc = appContainer.AuthService
-	api.DiscoveryService = appContainer.DiscoveryService
-
-	// 4. Initialize default admin user
-	log.Println("Checking for default user...")
-	if err := api.InitializeDefaultUser(context.Background()); err != nil {
-		log.Fatalf("Failed to initialize default user: %v", err)
+// buildHandlers constructs the API Handlers wiring all dependencies from the
+// container — replaces the package-level vars used pre-Phase 1.4.
+func buildHandlers(c *container.Container) *api.Handlers {
+	return &api.Handlers{
+		Config:           c.Config,
+		DB:               c.DB,
+		MessageRepo:      c.MessageRepo,
+		PartnerRepo:      c.PartnerRepo,
+		UserRepo:         c.UserRepo,
+		SessionRepo:      c.SessionRepo,
+		AuthService:      c.AuthService,
+		DiscoveryService: c.DiscoveryService,
+		WebSocketHub:     c.WebSocketHub,
 	}
+}
 
-	// 5. Initialize File Watcher
+// mustStartFileWatcher boots the inbox watcher or aborts.
+func mustStartFileWatcher(c *container.Container) *watcher.FileWatcher {
 	log.Println("Starting file watcher...")
-	fw, err := watcher.NewFileWatcher(appContainer.MessageRepo)
+	fw, err := watcher.NewFileWatcher(c.MessageRepo)
 	if err != nil {
 		log.Fatalf("Failed to create file watcher: %v", err)
 	}
@@ -107,41 +138,36 @@ func main() {
 		log.Fatalf("Failed to start file watcher: %v", err)
 	}
 	log.Println("✓ File watcher started")
+	return fw
+}
 
-	// 6. Start session cleanup goroutine with error handling
+// startSessionCleanup launches the background goroutine that prunes expired sessions hourly.
+func startSessionCleanup(c *container.Container) {
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
-			if err := appContainer.AuthService.CleanupExpiredSessions(context.Background()); err != nil {
+			if err := c.AuthService.CleanupExpiredSessions(context.Background()); err != nil {
 				log.Printf("ERROR: Failed to cleanup expired sessions: %v", err)
 			} else {
 				log.Println("✓ Expired sessions cleaned up")
 			}
 		}
 	}()
+}
 
-	// 8. Parse allowed IPs
+// mustSetupServers builds the internal and public HTTP servers, parses the IP
+// allowlist, mounts feature routers, and starts both listeners in background.
+func mustSetupServers(cfg *config.Config, h *api.Handlers) (*http.Server, *http.Server) {
 	allowedIPs, err := api.ParseAllowedIPs(cfg.AllowedIPsString())
 	if err != nil {
 		log.Fatalf("Failed to parse allowed IPs: %v", err)
 	}
 	log.Printf("✓ IP Allowlist: %v (Enabled: %v)", cfg.AllowedIPAddresses, cfg.EnableIPAllowlist)
 
-	// 9. Setup HTTP Routers
-	internalRouter := api.SetupInternalRouter(allowedIPs, cfg.InternalAPIKey, cfg.EnableIPAllowlist)
-	publicRouter := api.SetupPublicRouter()
+	internalRouter := h.SetupInternalRouter(allowedIPs, cfg.InternalAPIKey, cfg.EnableIPAllowlist)
+	publicRouter := h.SetupPublicRouter()
 
-	// Mount auth routes on internal router
-	internalRouter.Mount(constants.APIAuth, api.SetupAuthRouter())
-
-	// Mount dashboard routes on internal router
-	internalRouter.Mount(constants.APIDashboard, api.SetupDashboardRouter())
-
-	// Mount settings routes on internal router
-	internalRouter.Mount(constants.APISettings, api.SetupSettingsRouter())
-
-	// 10. Create HTTP Servers
 	internalServer := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.InternalAPIPort),
 		Handler:      internalRouter,
@@ -149,7 +175,6 @@ func main() {
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
-
 	publicServer := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.PublicAPIPort),
 		Handler:      publicRouter,
@@ -158,7 +183,6 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// 11. Start HTTP Servers in goroutines
 	go func() {
 		log.Printf("Starting Internal API Server on %s", internalServer.Addr)
 		log.Printf("  - POST %s%s (Protected: IP Allowlist + API Key)", constants.APIV1, constants.RouteTransmitRel)
@@ -184,26 +208,27 @@ func main() {
 		}
 	}()
 
-	log.Println("========================================")
-	log.Println("✓ FideX Edge Node is running!")
-	log.Println("========================================")
-	log.Println("Press Ctrl+C to gracefully shutdown...")
+	return internalServer, publicServer
+}
 
-	// 12. Setup graceful shutdown
+// runWithGracefulShutdown blocks on SIGINT/SIGTERM and then tears down resources
+// in dependency-safe order: file watcher → container (queue worker + DB) → HTTP servers.
+func runWithGracefulShutdown(
+	internalServer, publicServer *http.Server,
+	fw *watcher.FileWatcher,
+	c *container.Container,
+) {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-
-	// Wait for interrupt signal
 	<-quit
+
 	log.Println("\n========================================")
 	log.Println("Shutting down FideX Edge Node...")
 	log.Println("========================================")
 
-	// Create shutdown context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Shutdown file watcher
 	log.Println("Stopping file watcher...")
 	if err := fw.Stop(); err != nil {
 		log.Printf("Error stopping file watcher: %v", err)
@@ -211,15 +236,13 @@ func main() {
 		log.Println("✓ File watcher stopped")
 	}
 
-	// Shutdown container (handles queue worker, database, etc.)
 	log.Println("Stopping service container...")
-	if err := appContainer.Close(); err != nil {
+	if err := c.Close(); err != nil {
 		log.Printf("Error stopping container: %v", err)
 	} else {
 		log.Println("✓ Service container stopped")
 	}
 
-	// Shutdown internal server
 	log.Println("Stopping internal API server...")
 	if err := internalServer.Shutdown(ctx); err != nil {
 		log.Printf("Error shutting down internal server: %v", err)
@@ -227,7 +250,6 @@ func main() {
 		log.Println("✓ Internal API server stopped")
 	}
 
-	// Shutdown public server
 	log.Println("Stopping public API server...")
 	if err := publicServer.Shutdown(ctx); err != nil {
 		log.Printf("Error shutting down public server: %v", err)

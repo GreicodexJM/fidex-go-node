@@ -2,7 +2,7 @@
 
 ## Overall Status
 **Current Phase**: Phase 1 - Foundation Improvements
-**Progress**: ~60% (Phase 1.3 complete on branch `feature/phase-1.3-remove-db-global`)
+**Progress**: ~75% (Phase 1.3 merged to master; Phase 1.4 complete on branch `feature/phase-1.4-api-handlers-struct`; Phase 1.6 next)
 **Last Updated**: 2026-05-11
 
 ## Phase 1: Foundation Improvements (In Progress)
@@ -39,17 +39,21 @@
 - [x] `go build ./...` clean, `go test ./...` green (9 packages OK)
 - [x] Smoke test: binary boots through full container init without errors
 
-### 1.4 Refactor main.go 🔜
-**Status**: Partially advanced (AppConfig global removed); structural extraction still pending
-**Files**: `cmd/fidex-node/main.go`
-- [x] Remove global AppConfig variable
-- [ ] Extract mustLoadConfig()
-- [ ] Extract mustInitializeServices()
-- [ ] Extract ensureKeysExist()
-- [ ] Extract mustSetupServers()
-- [ ] Extract runWithGracefulShutdown()
-- [ ] Fold transitional `api.*` package-level vars into an `APIHandlers` struct passed to `SetupXxxRouter`
-- [ ] Test application starts correctly
+### 1.4 Refactor main.go ✅
+**Status**: Complete (2026-05-11, branch `feature/phase-1.4-api-handlers-struct`)
+**Files**: `cmd/fidex-node/main.go`, `internal/api/api_handlers.go` (new), `internal/api/*_handlers.go`, `internal/api/handlers.go`
+- [x] Remove global AppConfig variable (done in Phase 1.3)
+- [x] Extract mustLoadConfig()
+- [x] Extract mustInitContainer() / buildHandlers()
+- [x] Extract ensureKeysExist() + logAPIKeySecurityWarning()
+- [x] Extract mustStartFileWatcher() + startSessionCleanup()
+- [x] Extract mustSetupServers()
+- [x] Extract runWithGracefulShutdown()
+- [x] Fold transitional `api.*` package-level vars into `api.Handlers` struct; all handlers now methods on `*Handlers`
+- [x] Remove `wsHub` global + InitializeWebSocketHub/GetWebSocketHub from `dashboard_handlers.go`
+- [x] All Setup*Router functions converted to methods on `*Handlers`
+- [x] `go build ./...` clean, `go test ./...` green
+- [x] Smoke test: binary boots cleanly; SIGTERM produces graceful shutdown sequence
 
 ### 1.5 Fix Configuration Flag Parsing ✅
 **Status**: Complete
