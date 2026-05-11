@@ -13,7 +13,7 @@ import (
 
 // transmitHandler handles POST /api/v1/transmit
 // Accepts a raw JSON payload from the local ERP, wraps it in the FideX envelope, and queues it
-func transmitHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) transmitHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Received transmit request from %s", r.RemoteAddr)
 
 	// Parse the request body
@@ -52,7 +52,7 @@ func transmitHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save via repository
-	if err := MessageRepo.Create(r.Context(), msg); err != nil {
+	if err := h.MessageRepo.Create(r.Context(), msg); err != nil {
 		log.Printf("Failed to insert message: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to queue message", err)
 		return

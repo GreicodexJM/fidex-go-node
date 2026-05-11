@@ -1,7 +1,27 @@
 # Active Context: FideX AS5 Node
 
 ## Current Work Focus
-**Refactor Phase 1.3 — Remove `db.DB` global** (2026-05-11). All production callsites migrated from `internal/db` package globals to repositories injected via the service container. `internal/db` package deleted; schema and connection setup now live in `internal/repository/schema.go`. Branch: `feature/phase-1.3-remove-db-global`.
+**Refactor Phase 1.4 — Fold api.* package vars into Handlers struct + extract main.go helpers** (2026-05-11). Phase 1.3 merged to master. All HTTP handlers in `internal/api` are now methods on `*api.Handlers`; the transitional package-level vars (`NodeConfig`, `DB`, `MessageRepo`, `PartnerRepo`, `UserRepo`, `SessionRepo`, `AuthSvc`, `DiscoveryService`) and the `wsHub` global in `dashboard_handlers.go` are gone. `main.go` now reads as a thin orchestrator: `mustLoadConfig` → `ensureKeysExist` → `mustInitContainer` → `buildHandlers` → `mustStartFileWatcher` → `startSessionCleanup` → `mustSetupServers` → `runWithGracefulShutdown`. Branch: `feature/phase-1.4-api-handlers-struct`.
+
+## Recent Changes (2026-05-11) — Phase 1.4
+
+### What changed
+- ✅ **New `internal/api/api_handlers.go`** exposing `Handlers` struct that owns `Config`, `DB`, all repos, `AuthService`, `DiscoveryService`, and `WebSocketHub`.
+- ✅ **All handlers converted to methods on `*Handlers`** across `auth_handlers.go`, `dashboard_handlers.go`, `discovery_handlers.go`, `external_handlers.go`, `internal_handlers.go`, `settings_handlers.go`. Pure handlers without state (`healthHandler`, `jwksHandler`, `constantsHandler`, `serveLoginHandler`, `serveDashboardHandler`, `serveStaticAssets`) remain free functions.
+- ✅ **`SetupInternalRouter`, `SetupPublicRouter`, `SetupAuthRouter`, `SetupDashboardRouter`, `SetupSettingsRouter` are now methods on `*Handlers`**. Internal router now mounts auth/dashboard/settings routers itself; main.go no longer needs separate `Mount` calls.
+- ✅ **`InitializeDefaultUser` is now a method on `*Handlers`**.
+- ✅ **Removed `wsHub` global + `InitializeWebSocketHub` / `GetWebSocketHub`** from `dashboard_handlers.go`. `Handlers.WebSocketHub` is wired from `container.WebSocketHub` (which the container already runs).
+- ✅ **`main.go` refactored** into 8 helpers — `mustLoadConfig`, `ensureKeysExist`, `logAPIKeySecurityWarning`, `mustInitContainer`, `buildHandlers`, `mustStartFileWatcher`, `startSessionCleanup`, `mustSetupServers`, `runWithGracefulShutdown`. `main()` is now ~30 lines of orchestration.
+- ✅ **`.gitignore`** added (was missing — compiled `fidex-node` binary was tracked and committed in error). Binary + local SQLite + cookie/log artifacts now ignored.
+
+### Verification (Phase 1.4)
+- `go build ./...` clean
+- `go test ./...` green (9/9 test packages pass)
+- Binary smoke test: boots cleanly through container init → DB ready → workers running → file watcher monitoring → both HTTP servers bound. Graceful shutdown via SIGTERM works.
+
+### Outstanding (next phase)
+- Phase 1.6: Replace ~223 `log.Printf` calls with the `internal/logging` structured logger (already exists, just needs to flow through DI to handlers).
+- Repository interface gap: `MessageRepository` and `PartnerRepository` still don't cover paginated listing, date-range counts, or partner upsert — dashboard/settings handlers continue using `h.DB` raw SQL. Track as deuda técnica.
 
 ## Recent Changes (2026-05-11) — Phase 1.3
 

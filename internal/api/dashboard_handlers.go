@@ -16,31 +16,15 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var (
-	// Global WebSocket hub
-	wsHub *dashboard.Hub
-
-	// WebSocket upgrader
-	upgrader = websocket.Upgrader{
-		ReadBufferSize:  1024,
-		WriteBufferSize: 1024,
-		CheckOrigin: func(r *http.Request) bool {
-			// Allow all origins for now (restrict in production)
-			return true
-		},
-	}
-)
-
-// InitializeWebSocketHub initializes the global WebSocket hub
-func InitializeWebSocketHub() *dashboard.Hub {
-	wsHub = dashboard.NewHub()
-	go wsHub.Run()
-	return wsHub
-}
-
-// GetWebSocketHub returns the global WebSocket hub
-func GetWebSocketHub() *dashboard.Hub {
-	return wsHub
+// upgrader is the WebSocket upgrader configuration. It is intentionally
+// package-level: it carries no per-request state and is safe for concurrent use.
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		// Allow all origins for now (restrict in production)
+		return true
+	},
 }
 
 // DashboardMetrics represents system health and metrics
@@ -76,7 +60,7 @@ type PartnerDiscoveryResponse struct {
 
 // qrCodeHandler handles GET /api/dashboard/qr
 // Generates and returns a QR code PNG containing the node's discovery URL
-func qrCodeHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) qrCodeHandler(w http.ResponseWriter, r *http.Request) {
 	// Get size parameter (optional)
 	sizeStr := r.URL.Query().Get("size")
 	size := 256 // Default
@@ -110,7 +94,7 @@ func qrCodeHandler(w http.ResponseWriter, r *http.Request) {
 
 // metricsHandler handles GET /api/dashboard/metrics
 // Returns real-time system metrics
-func metricsHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) metricsHandler(w http.ResponseWriter, r *http.Request) {
 	// Calculate metrics from database
 	metrics := DashboardMetrics{
 		SystemStatus: "operational",
@@ -119,10 +103,10 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 	// Count messages in last 24 hours by status
 	cutoff := time.Now().Add(-24 * time.Hour)
 
-	rows, err := DB.Query(`
-		SELECT status, COUNT(*) 
-		FROM messages 
-		WHERE created_at >= ? 
+	rows, err := h.DB.Query(`
+		SELECT status, COUNT(*)
+		FROM messages
+		WHERE created_at >= ?
 		GROUP BY status
 	`, cutoff)
 
@@ -157,7 +141,7 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Count active partners
-	err = DB.QueryRow(`SELECT COUNT(*) FROM trading_partners`).Scan(&metrics.ActivePartners)
+	err = h.DB.QueryRow(`SELECT COUNT(*) FROM trading_partners`).Scan(&metrics.ActivePartners)
 	if err != nil {
 		log.Printf("Failed to count partners: %v", err)
 	}
@@ -167,7 +151,7 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 
 // messagesHandler handles GET /api/dashboard/messages
 // Returns paginated list of messages
-func messagesHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) messagesHandler(w http.ResponseWriter, r *http.Request) {
 	// Parse query parameters
 	limitStr := r.URL.Query().Get("limit")
 	offsetStr := r.URL.Query().Get("offset")
@@ -204,7 +188,7 @@ func messagesHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Get total count
 	var total int
-	err := DB.QueryRow(countQuery, args...).Scan(&total)
+	err := h.DB.QueryRow(countQuery, args...).Scan(&total)
 	if err != nil {
 		log.Printf("Failed to count messages: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to count messages", err)
@@ -212,7 +196,7 @@ func messagesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get messages
-	rows, err := DB.Query(query, queryArgs...)
+	rows, err := h.DB.Query(query, queryArgs...)
 	if err != nil {
 		log.Printf("Failed to query messages: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to query messages", err)
@@ -242,10 +226,10 @@ func messagesHandler(w http.ResponseWriter, r *http.Request) {
 
 // partnersHandler handles GET /api/dashboard/partners
 // Returns list of trading partners
-func partnersHandler(w http.ResponseWriter, r *http.Request) {
-	rows, err := DB.Query(`
-		SELECT id, partner_id, name, jwks_url, created_at 
-		FROM trading_partners 
+func (h *Handlers) partnersHandler(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.DB.Query(`
+		SELECT id, partner_id, name, jwks_url, created_at
+		FROM trading_partners
 		ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -283,7 +267,7 @@ func partnersHandler(w http.ResponseWriter, r *http.Request) {
 
 // discoverPartnerHandler handles POST /api/dashboard/partners/discover
 // Initiates partner auto-discovery from AS5 configuration URL
-func discoverPartnerHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) discoverPartnerHandler(w http.ResponseWriter, r *http.Request) {
 	var req PartnerDiscoveryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondWithError(w, http.StatusBadRequest, "Invalid request body", err)
@@ -314,7 +298,7 @@ func discoverPartnerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save partner to database
-	_, err = DB.Exec(`
+	_, err = h.DB.Exec(`
 		INSERT INTO trading_partners (partner_id, name, jwks_url, public_key_jwks, last_key_refresh, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(partner_id) DO UPDATE SET
@@ -343,8 +327,8 @@ func discoverPartnerHandler(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusOK, response)
 
 	// Broadcast partner_added event to WebSocket clients
-	if wsHub != nil {
-		wsHub.Broadcast("partner_added", map[string]interface{}{
+	if h.WebSocketHub != nil {
+		h.WebSocketHub.Broadcast("partner_added", map[string]interface{}{
 			"partner_id": as5Config.Issuer,
 			"name":       as5Config.OrganizationName,
 			"status":     "connected",
@@ -354,9 +338,9 @@ func discoverPartnerHandler(w http.ResponseWriter, r *http.Request) {
 
 // websocketHandler handles GET /api/dashboard/ws
 // Upgrades the connection to WebSocket for real-time updates
-func websocketHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) websocketHandler(w http.ResponseWriter, r *http.Request) {
 	// Check if WebSocket hub is initialized
-	if wsHub == nil {
+	if h.WebSocketHub == nil {
 		log.Printf("WebSocket hub not initialized")
 		http.Error(w, "WebSocket not available", http.StatusServiceUnavailable)
 		return
@@ -373,11 +357,11 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 	clientID := r.RemoteAddr
 
 	// Serve the WebSocket connection
-	wsHub.ServeWs(conn, clientID)
+	h.WebSocketHub.ServeWs(conn, clientID)
 }
 
 // SetupDashboardRouter configures the dashboard API routes
-func SetupDashboardRouter() *chi.Mux {
+func (h *Handlers) SetupDashboardRouter() *chi.Mux {
 	r := chi.NewRouter()
 
 	// Dashboard API endpoints (all require authentication)
@@ -385,12 +369,12 @@ func SetupDashboardRouter() *chi.Mux {
 		// Apply auth middleware to all dashboard routes
 		// r.Use(auth.RequireAuthAPI)  // Uncomment when ready to enable auth
 
-		r.Get("/ws", websocketHandler)
-		r.Get("/qr", qrCodeHandler)
-		r.Get("/metrics", metricsHandler)
-		r.Get("/messages", messagesHandler)
-		r.Get("/partners", partnersHandler)
-		r.Post("/partners/discover", discoverPartnerHandler)
+		r.Get("/ws", h.websocketHandler)
+		r.Get("/qr", h.qrCodeHandler)
+		r.Get("/metrics", h.metricsHandler)
+		r.Get("/messages", h.messagesHandler)
+		r.Get("/partners", h.partnersHandler)
+		r.Post("/partners/discover", h.discoverPartnerHandler)
 	})
 
 	return r

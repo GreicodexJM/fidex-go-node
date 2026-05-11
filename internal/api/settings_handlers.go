@@ -61,8 +61,8 @@ type UpdatePartnerRequest struct {
 
 // getConfigHandler handles GET /api/settings/config
 // Returns the current node configuration (read-only, externalized from DB)
-func getConfigHandler(w http.ResponseWriter, r *http.Request) {
-	if NodeConfig == nil {
+func (h *Handlers) getConfigHandler(w http.ResponseWriter, r *http.Request) {
+	if h.Config == nil {
 		log.Printf("Node config not initialized")
 		respondWithError(w, http.StatusInternalServerError, "Configuration not available", nil)
 		return
@@ -70,20 +70,20 @@ func getConfigHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Check if private key file exists
 	hasPrivateKey := false
-	if _, err := os.Stat(NodeConfig.PrivateKeyPath); err == nil {
+	if _, err := os.Stat(h.Config.PrivateKeyPath); err == nil {
 		hasPrivateKey = true
 	}
 
 	response := ConfigResponse{
-		NodeID:             NodeConfig.NodeID,
-		OrganizationName:   NodeConfig.OrganizationName,
-		PublicDomain:       NodeConfig.PublicDomain,
-		InternalAPIPort:    NodeConfig.InternalAPIPort,
-		PublicAPIPort:      NodeConfig.PublicAPIPort,
-		AllowedIPAddresses: NodeConfig.AllowedIPAddresses,
-		EnableIPAllowlist:  NodeConfig.EnableIPAllowlist,
+		NodeID:             h.Config.NodeID,
+		OrganizationName:   h.Config.OrganizationName,
+		PublicDomain:       h.Config.PublicDomain,
+		InternalAPIPort:    h.Config.InternalAPIPort,
+		PublicAPIPort:      h.Config.PublicAPIPort,
+		AllowedIPAddresses: h.Config.AllowedIPAddresses,
+		EnableIPAllowlist:  h.Config.EnableIPAllowlist,
 		HasPrivateKey:      hasPrivateKey,
-		PublicKeyPath:      NodeConfig.PublicKeyPath,
+		PublicKeyPath:      h.Config.PublicKeyPath,
 	}
 
 	respondWithJSON(w, http.StatusOK, response)
@@ -91,8 +91,8 @@ func getConfigHandler(w http.ResponseWriter, r *http.Request) {
 
 // rotateKeysHandler handles POST /api/settings/rotate-keys
 // Generates new RSA key pair and saves to file system
-func rotateKeysHandler(w http.ResponseWriter, r *http.Request) {
-	if NodeConfig == nil {
+func (h *Handlers) rotateKeysHandler(w http.ResponseWriter, r *http.Request) {
+	if h.Config == nil {
 		log.Printf("Node config not initialized")
 		respondWithError(w, http.StatusInternalServerError, "Configuration not available", nil)
 		return
@@ -109,14 +109,14 @@ func rotateKeysHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save private key to file
-	if err := os.WriteFile(NodeConfig.PrivateKeyPath, []byte(privateKeyPEM), 0600); err != nil {
+	if err := os.WriteFile(h.Config.PrivateKeyPath, []byte(privateKeyPEM), 0600); err != nil {
 		log.Printf("Failed to save private key: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to save private key", err)
 		return
 	}
 
 	// Save public key to file
-	if err := os.WriteFile(NodeConfig.PublicKeyPath, []byte(publicKeyPEM), 0644); err != nil {
+	if err := os.WriteFile(h.Config.PublicKeyPath, []byte(publicKeyPEM), 0644); err != nil {
 		log.Printf("Failed to save public key: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to save public key", err)
 		return
@@ -132,8 +132,8 @@ func rotateKeysHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // listUsersHandler handles GET /api/settings/users
-func listUsersHandler(w http.ResponseWriter, r *http.Request) {
-	rows, err := DB.Query(`SELECT id, username, created_at FROM users ORDER BY created_at DESC`)
+func (h *Handlers) listUsersHandler(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.DB.Query(`SELECT id, username, created_at FROM users ORDER BY created_at DESC`)
 	if err != nil {
 		log.Printf("Failed to query users: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to load users", err)
@@ -157,7 +157,7 @@ func listUsersHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // createUserHandler handles POST /api/settings/users
-func createUserHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) createUserHandler(w http.ResponseWriter, r *http.Request) {
 	var req CreateUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondWithError(w, http.StatusBadRequest, "Invalid request body", err)
@@ -178,7 +178,7 @@ func createUserHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create user
-	user, err := AuthSvc.CreateUser(r.Context(), req.Username, hashedPassword)
+	user, err := h.AuthService.CreateUser(r.Context(), req.Username, hashedPassword)
 	if err != nil {
 		log.Printf("Failed to create user: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to create user (username may already exist)", err)
@@ -198,7 +198,7 @@ func createUserHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // deleteUserHandler handles DELETE /api/settings/users/:id
-func deleteUserHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) deleteUserHandler(w http.ResponseWriter, r *http.Request) {
 	userID := chi.URLParam(r, "id")
 
 	// Don't allow deleting yourself
@@ -209,7 +209,7 @@ func deleteUserHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Delete user
-	_, err := DB.Exec(`DELETE FROM users WHERE id = ?`, userID)
+	_, err := h.DB.Exec(`DELETE FROM users WHERE id = ?`, userID)
 	if err != nil {
 		log.Printf("Failed to delete user: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to delete user", err)
@@ -217,7 +217,7 @@ func deleteUserHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Delete user's sessions
-	_, err = DB.Exec(`DELETE FROM sessions WHERE user_id = ?`, userID)
+	_, err = h.DB.Exec(`DELETE FROM sessions WHERE user_id = ?`, userID)
 	if err != nil {
 		log.Printf("Failed to delete user sessions: %v", err)
 	}
@@ -231,7 +231,7 @@ func deleteUserHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // updatePasswordHandler handles PUT /api/settings/password
-func updatePasswordHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) updatePasswordHandler(w http.ResponseWriter, r *http.Request) {
 	var req UpdateUserPasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondWithError(w, http.StatusBadRequest, "Invalid request body", err)
@@ -260,7 +260,7 @@ func updatePasswordHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update password
-	_, err = DB.Exec(`UPDATE users SET password_hash = ? WHERE id = ?`, newHash, currentUser.ID)
+	_, err = h.DB.Exec(`UPDATE users SET password_hash = ? WHERE id = ?`, newHash, currentUser.ID)
 	if err != nil {
 		log.Printf("Failed to update password: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to update password", err)
@@ -276,8 +276,8 @@ func updatePasswordHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // listPartnersDetailedHandler handles GET /api/settings/partners
-func listPartnersDetailedHandler(w http.ResponseWriter, r *http.Request) {
-	rows, err := DB.Query(`
+func (h *Handlers) listPartnersDetailedHandler(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.DB.Query(`
 		SELECT id, partner_id, name, jwks_url, last_key_refresh, created_at
 		FROM trading_partners
 		ORDER BY created_at DESC
@@ -315,7 +315,7 @@ func listPartnersDetailedHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // updatePartnerHandler handles PUT /api/settings/partners/:id
-func updatePartnerHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) updatePartnerHandler(w http.ResponseWriter, r *http.Request) {
 	partnerID := chi.URLParam(r, "id")
 
 	var req UpdatePartnerRequest
@@ -325,7 +325,7 @@ func updatePartnerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update partner name
-	_, err := DB.Exec(`UPDATE trading_partners SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, req.Name, partnerID)
+	_, err := h.DB.Exec(`UPDATE trading_partners SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, req.Name, partnerID)
 	if err != nil {
 		log.Printf("Failed to update partner: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to update partner", err)
@@ -341,11 +341,11 @@ func updatePartnerHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // deletePartnerHandler handles DELETE /api/settings/partners/:id
-func deletePartnerHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) deletePartnerHandler(w http.ResponseWriter, r *http.Request) {
 	partnerID := chi.URLParam(r, "id")
 
 	// Delete partner
-	_, err := DB.Exec(`DELETE FROM trading_partners WHERE id = ?`, partnerID)
+	_, err := h.DB.Exec(`DELETE FROM trading_partners WHERE id = ?`, partnerID)
 	if err != nil {
 		log.Printf("Failed to delete partner: %v", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to delete partner", err)
@@ -372,26 +372,26 @@ func parseInt64(s string) int64 {
 }
 
 // SetupSettingsRouter configures the settings API routes
-func SetupSettingsRouter() chi.Router {
+func (h *Handlers) SetupSettingsRouter() chi.Router {
 	r := chi.NewRouter()
 
 	// All settings routes require authentication
 	// r.Use(auth.RequireAuthAPI) // Uncomment when ready
 
 	// Node configuration (read-only, use config file/env vars to change)
-	r.Get("/config", getConfigHandler)
-	r.Post("/rotate-keys", rotateKeysHandler)
+	r.Get("/config", h.getConfigHandler)
+	r.Post("/rotate-keys", h.rotateKeysHandler)
 
 	// User management
-	r.Get("/users", listUsersHandler)
-	r.Post("/users", createUserHandler)
-	r.Delete("/users/{id}", deleteUserHandler)
-	r.Put("/password", updatePasswordHandler)
+	r.Get("/users", h.listUsersHandler)
+	r.Post("/users", h.createUserHandler)
+	r.Delete("/users/{id}", h.deleteUserHandler)
+	r.Put("/password", h.updatePasswordHandler)
 
 	// Partner management
-	r.Get("/partners", listPartnersDetailedHandler)
-	r.Put("/partners/{id}", updatePartnerHandler)
-	r.Delete("/partners/{id}", deletePartnerHandler)
+	r.Get("/partners", h.listPartnersDetailedHandler)
+	r.Put("/partners/{id}", h.updatePartnerHandler)
+	r.Delete("/partners/{id}", h.deletePartnerHandler)
 
 	return r
 }

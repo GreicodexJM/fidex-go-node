@@ -12,7 +12,7 @@ import (
 
 // SetupInternalRouter configures the internal API routes (ERP-facing)
 // This router should be bound to localhost only and protected with IP allowlist + API key
-func SetupInternalRouter(allowedIPs []string, apiKey string, enableIPAllowlist bool) *chi.Mux {
+func (h *Handlers) SetupInternalRouter(allowedIPs []string, apiKey string, enableIPAllowlist bool) *chi.Mux {
 	r := chi.NewRouter()
 
 	// Common middleware
@@ -50,15 +50,17 @@ func SetupInternalRouter(allowedIPs []string, apiKey string, enableIPAllowlist b
 	// Constants API (public access for frontend)
 	r.Get("/api/constants", constantsHandler)
 
-	// Note: Auth, Dashboard, and Settings routes are mounted separately in main.go
-	// to allow for modular router composition
+	// Mount feature routers
+	r.Mount(constants.APIAuth, h.SetupAuthRouter())
+	r.Mount(constants.APIDashboard, h.SetupDashboardRouter())
+	r.Mount(constants.APISettings, h.SetupSettingsRouter())
 
 	// ERP Integration API (protected with API key)
 	r.Route(constants.APIV1, func(r chi.Router) {
 		if apiKey != "" {
 			r.Use(APIKeyMiddleware(apiKey))
 		}
-		r.Post(constants.RouteTransmitRel, transmitHandler)
+		r.Post(constants.RouteTransmitRel, h.transmitHandler)
 	})
 
 	return r
@@ -66,7 +68,7 @@ func SetupInternalRouter(allowedIPs []string, apiKey string, enableIPAllowlist b
 
 // SetupPublicRouter configures the public API routes (B2B-facing)
 // This router should be accessible from external networks
-func SetupPublicRouter() *chi.Mux {
+func (h *Handlers) SetupPublicRouter() *chi.Mux {
 	r := chi.NewRouter()
 
 	// Common middleware
@@ -81,14 +83,14 @@ func SetupPublicRouter() *chi.Mux {
 
 	// Public B2B API routes
 	r.Route(constants.APIV1, func(r chi.Router) {
-		r.Post(constants.RouteInboundRel, inboundHandler)
-		r.Post(constants.RouteReceiptRel, receiptHandler)
-		r.Post(constants.RouteRegisterRel, webhookRegistrationHandler)
+		r.Post(constants.RouteInboundRel, h.inboundHandler)
+		r.Post(constants.RouteReceiptRel, h.receiptHandler)
+		r.Post(constants.RouteRegisterRel, h.webhookRegistrationHandler)
 	})
 
 	// Discovery endpoints
 	r.Get(constants.RouteJWKS, jwksHandler)
-	r.Get(constants.RouteAS5Configuration, as5ConfigHandler)
+	r.Get(constants.RouteAS5Configuration, h.as5ConfigHandler)
 
 	return r
 }

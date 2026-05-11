@@ -25,7 +25,7 @@ type LoginResponse struct {
 }
 
 // loginHandler handles POST /api/auth/login
-func loginHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) loginHandler(w http.ResponseWriter, r *http.Request) {
 	var req LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondWithJSON(w, http.StatusBadRequest, LoginResponse{
@@ -35,7 +35,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := AuthSvc.GetUserByUsername(r.Context(), req.Username)
+	user, err := h.AuthService.GetUserByUsername(r.Context(), req.Username)
 	if err != nil {
 		log.Printf("Login failed: user not found: %s", req.Username)
 		respondWithJSON(w, http.StatusUnauthorized, LoginResponse{
@@ -54,7 +54,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := AuthSvc.CreateSession(r.Context(), user.ID)
+	session, err := h.AuthService.CreateSession(r.Context(), user.ID)
 	if err != nil {
 		log.Printf("Failed to create session: %v", err)
 		respondWithJSON(w, http.StatusInternalServerError, LoginResponse{
@@ -83,10 +83,10 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // logoutHandler handles POST /api/auth/logout
-func logoutHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) logoutHandler(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(auth.SessionCookieName)
 	if err == nil {
-		_ = AuthSvc.DeleteSession(r.Context(), cookie.Value)
+		_ = h.AuthService.DeleteSession(r.Context(), cookie.Value)
 	}
 
 	http.SetCookie(w, &http.Cookie{
@@ -104,7 +104,7 @@ func logoutHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // meHandler handles GET /api/auth/me
-func meHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) meHandler(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.GetUserFromContext(r.Context())
 	if !ok {
 		respondWithJSON(w, http.StatusUnauthorized, map[string]interface{}{
@@ -127,8 +127,8 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 }
 
 // InitializeDefaultUser creates the default admin user if no users exist
-func InitializeDefaultUser(ctx context.Context) error {
-	count, err := AuthSvc.CountUsers(ctx)
+func (h *Handlers) InitializeDefaultUser(ctx context.Context) error {
+	count, err := h.AuthService.CountUsers(ctx)
 	if err != nil {
 		return err
 	}
@@ -139,7 +139,7 @@ func InitializeDefaultUser(ctx context.Context) error {
 			return err
 		}
 
-		if _, err := AuthSvc.CreateUser(ctx, "admin", hashedPassword); err != nil {
+		if _, err := h.AuthService.CreateUser(ctx, "admin", hashedPassword); err != nil {
 			return err
 		}
 
@@ -155,12 +155,12 @@ func InitializeDefaultUser(ctx context.Context) error {
 }
 
 // SetupAuthRouter configures the auth API routes
-func SetupAuthRouter() chi.Router {
+func (h *Handlers) SetupAuthRouter() chi.Router {
 	r := chi.NewRouter()
 
-	r.Post("/login", loginHandler)
-	r.Post("/logout", logoutHandler)
-	r.Get("/me", meHandler)
+	r.Post("/login", h.loginHandler)
+	r.Post("/logout", h.logoutHandler)
+	r.Get("/me", h.meHandler)
 
 	return r
 }

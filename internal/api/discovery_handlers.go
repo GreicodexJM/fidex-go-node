@@ -1,53 +1,25 @@
 package api
 
 import (
-	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
 
-	"fidex-node/internal/auth"
-	"fidex-node/internal/config"
 	"fidex-node/internal/discovery"
-	"fidex-node/internal/domain"
-)
-
-// Transitional package-level dependencies injected from main.go after
-// container initialization. These will be folded into an APIHandlers
-// struct in Phase 1.4 of the refactor.
-var (
-	// NodeConfig is the application config set from main
-	NodeConfig *config.Config
-	// DiscoveryService is the discovery service instance
-	DiscoveryService *discovery.DiscoveryService
-	// AuthSvc provides session / user authentication operations
-	AuthSvc *auth.Service
-	// MessageRepo persists FideX messages
-	MessageRepo domain.MessageRepository
-	// PartnerRepo persists trading partner profiles
-	PartnerRepo domain.PartnerRepository
-	// UserRepo persists dashboard users
-	UserRepo domain.UserRepository
-	// SessionRepo persists dashboard sessions
-	SessionRepo domain.SessionRepository
-	// DB exposes the raw connection for handlers that need ad-hoc queries
-	// not yet covered by repository interfaces (dashboard metrics, settings
-	// listings). Tracked as deuda técnica for Phase 1.4+.
-	DB *sql.DB
 )
 
 // as5ConfigHandler handles GET /.well-known/as5-configuration
 // Returns the node's AS5 discovery document
-func as5ConfigHandler(w http.ResponseWriter, r *http.Request) {
-	if NodeConfig == nil {
+func (h *Handlers) as5ConfigHandler(w http.ResponseWriter, r *http.Request) {
+	if h.Config == nil {
 		log.Printf("Node config not initialized")
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 
 	discConfig := discovery.NodeConfig{
-		NodeID:           NodeConfig.NodeID,
-		OrganizationName: NodeConfig.OrganizationName,
+		NodeID:           h.Config.NodeID,
+		OrganizationName: h.Config.OrganizationName,
 		BaseURL:          getBaseURL(r),
 	}
 
@@ -62,7 +34,7 @@ func as5ConfigHandler(w http.ResponseWriter, r *http.Request) {
 
 // webhookRegistrationHandler handles POST /as5/onboarding/webhook
 // Accepts registration requests from partners during discovery handshake
-func webhookRegistrationHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) webhookRegistrationHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -77,14 +49,14 @@ func webhookRegistrationHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if DiscoveryService == nil {
+	if h.DiscoveryService == nil {
 		log.Printf("Discovery service not initialized")
 		respondWithJSONError(w, http.StatusInternalServerError, "Service not available")
 		return
 	}
 
 	// Process the registration
-	if err := DiscoveryService.HandleWebhookRegistration(r.Context(), req); err != nil {
+	if err := h.DiscoveryService.HandleWebhookRegistration(r.Context(), req); err != nil {
 		log.Printf("Failed to process registration: %v", err)
 		respondWithJSONError(w, http.StatusBadRequest, err.Error())
 		return
