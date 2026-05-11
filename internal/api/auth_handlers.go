@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"net/http"
 
 	"fidex-node/internal/auth"
@@ -37,7 +36,7 @@ func (h *Handlers) loginHandler(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.AuthService.GetUserByUsername(r.Context(), req.Username)
 	if err != nil {
-		log.Printf("Login failed: user not found: %s", req.Username)
+		logger.Warn(r.Context(), "Login failed: user not found: %s", req.Username)
 		respondWithJSON(w, http.StatusUnauthorized, LoginResponse{
 			Success: false,
 			Message: "Invalid username or password",
@@ -46,7 +45,7 @@ func (h *Handlers) loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := auth.VerifyPassword(user.PasswordHash, req.Password); err != nil {
-		log.Printf("Login failed: invalid password for user: %s", req.Username)
+		logger.Warn(r.Context(), "Login failed: invalid password for user: %s", req.Username)
 		respondWithJSON(w, http.StatusUnauthorized, LoginResponse{
 			Success: false,
 			Message: "Invalid username or password",
@@ -56,7 +55,7 @@ func (h *Handlers) loginHandler(w http.ResponseWriter, r *http.Request) {
 
 	session, err := h.AuthService.CreateSession(r.Context(), user.ID)
 	if err != nil {
-		log.Printf("Failed to create session: %v", err)
+		logger.Error(r.Context(), "Failed to create session: %v", err)
 		respondWithJSON(w, http.StatusInternalServerError, LoginResponse{
 			Success: false,
 			Message: "Failed to create session",
@@ -74,7 +73,7 @@ func (h *Handlers) loginHandler(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	log.Printf("User logged in successfully: %s", user.Username)
+	logger.Info(r.Context(), "User logged in successfully: %s", user.Username)
 
 	respondWithJSON(w, http.StatusOK, LoginResponse{
 		Success:  true,
@@ -143,12 +142,7 @@ func (h *Handlers) InitializeDefaultUser(ctx context.Context) error {
 			return err
 		}
 
-		log.Println("========================================")
-		log.Println("IMPORTANT: Default admin user created")
-		log.Println("Username: admin")
-		log.Println("Password: admin123")
-		log.Println("Please change this password immediately!")
-		log.Println("========================================")
+		logger.Warn(ctx, "Default admin user created — username=admin, password=admin123. CHANGE THIS PASSWORD IMMEDIATELY.")
 	}
 
 	return nil

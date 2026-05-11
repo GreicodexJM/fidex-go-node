@@ -6,14 +6,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"time"
 
 	"fidex-node/internal/crypto"
 	"fidex-node/internal/domain"
 	"fidex-node/internal/errors"
+	"fidex-node/internal/logging"
 )
+
+// logger is the package-level structured logger for the queue worker.
+var logger = logging.New("queue")
 
 // Worker represents the message queue worker responsible for delivering outbound messages
 type Worker struct {
@@ -81,7 +84,8 @@ func NewWorkerWithConfig(
 // Start starts the worker loop
 func (w *Worker) Start() {
 	go func() {
-		log.Println("Queue worker started")
+		ctx := context.Background()
+		logger.Info(ctx, "Queue worker started")
 		ticker := time.NewTicker(w.config.PollInterval)
 		defer ticker.Stop()
 
@@ -93,7 +97,7 @@ func (w *Worker) Start() {
 			case <-ticker.C:
 				w.processQueue()
 			case <-w.stopChan:
-				log.Println("Queue worker stopped")
+				logger.Info(ctx, "Queue worker stopped")
 				return
 			}
 		}
@@ -112,7 +116,7 @@ func (w *Worker) processQueue() {
 	// Get all queued messages
 	messages, err := w.messageRepo.ListByStatus(ctx, domain.StatusQueued)
 	if err != nil {
-		log.Printf("ERROR: Failed to get queued messages: %v", err)
+		logger.Error(ctx, "Failed to get queued messages: %v", err)
 		return
 	}
 
@@ -120,7 +124,7 @@ func (w *Worker) processQueue() {
 		return
 	}
 
-	log.Printf("Processing %d queued message(s)", len(messages))
+	logger.Info(ctx, "Processing %d queued message(s)", len(messages))
 
 	for _, msg := range messages {
 		// Skip if not time to retry yet
@@ -173,7 +177,7 @@ func (w *Worker) deliverMessage(ctx context.Context, msg *domain.Message) error 
 	req.Header.Set("X-FideX-Sender", envelope.Routing.SenderID)
 
 	// Send the request
-	log.Printf("Delivering message %s to %s at %s", msg.MessageID, partner.Name, partner.MessageEndpoint)
+	logger.Info(ctx, "Delivering message %s to %s at %s", msg.MessageID, partner.Name, partner.MessageEndpoint)
 
 	resp, err := w.httpClient.Do(req)
 	if err != nil {
@@ -190,7 +194,7 @@ func (w *Worker) deliverMessage(ctx context.Context, msg *domain.Message) error 
 			fmt.Sprintf("partner returned status %d: %s", resp.StatusCode, string(body)))
 	}
 
-	log.Printf("Message %s delivered successfully to %s (status: %d)",
+	logger.Info(ctx, "Message %s delivered successfully to %s (status: %d)",
 		msg.MessageID, partner.Name, resp.StatusCode)
 
 	return nil
@@ -199,9 +203,9 @@ func (w *Worker) deliverMessage(ctx context.Context, msg *domain.Message) error 
 // handleSuccess marks a message as delivered
 func (w *Worker) handleSuccess(ctx context.Context, msg *domain.Message) {
 	if err := w.messageRepo.UpdateStatus(ctx, msg.MessageID, domain.StatusDelivered); err != nil {
-		log.Printf("ERROR: Failed to update message status to DELIVERED: %v", err)
+		logger.Error(ctx, "Failed to update message status to DELIVERED: %v", err)
 	} else {
-		log.Printf("Message %s marked as DELIVERED", msg.MessageID)
+		logger.Info(ctx, "Message %s marked as DELIVERED", msg.MessageID)
 	}
 }
 
@@ -221,15 +225,15 @@ func (w *Worker) handleFailure(ctx context.Context, msg *domain.Message, deliver
 
 	if !shouldRetry {
 		// Mark as failed
-		log.Printf("Message %s FAILED after %d attempts: %s", msg.MessageID, msg.RetryCount, lastError)
+		logger.Warn(ctx, "Message %s FAILED after %d attempts: %s", msg.MessageID, msg.RetryCount, lastError)
 
 		if err := w.messageRepo.UpdateStatus(ctx, msg.MessageID, domain.StatusFailed); err != nil {
-			log.Printf("ERROR: Failed to update message status to FAILED: %v", err)
+			logger.Error(ctx, "Failed to update message status to FAILED: %v", err)
 		}
 
 		// Update error info
 		if err := w.messageRepo.UpdateRetryInfo(ctx, msg.MessageID, msg.RetryCount, nil, lastError); err != nil {
-			log.Printf("ERROR: Failed to update retry info: %v", err)
+			logger.Error(ctx, "Failed to update retry info: %v", err)
 		}
 		return
 	}
@@ -242,13 +246,13 @@ func (w *Worker) handleFailure(ctx context.Context, msg *domain.Message, deliver
 	backoff := time.Duration(backoffMinutes) * time.Minute
 	nextRetry := time.Now().Add(backoff)
 
-	log.Printf("Message %s will retry %d/%d at %s (backoff: %v): %s",
+	logger.Warn(ctx, "Message %s will retry %d/%d at %s (backoff: %v): %s",
 		msg.MessageID, msg.RetryCount, w.config.MaxRetries,
 		nextRetry.Format(time.RFC3339), backoff, lastError)
 
 	// Update retry info in database
 	if err := w.messageRepo.UpdateRetryInfo(ctx, msg.MessageID, msg.RetryCount, &nextRetry, lastError); err != nil {
-		log.Printf("ERROR: Failed to update retry info: %v", err)
+		logger.Error(ctx, "Failed to update retry info: %v", err)
 	}
 }
 

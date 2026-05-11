@@ -1,9 +1,9 @@
 package container
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"os"
 
 	"fidex-node/internal/auth"
@@ -12,9 +12,13 @@ import (
 	"fidex-node/internal/dashboard"
 	"fidex-node/internal/discovery"
 	"fidex-node/internal/domain"
+	"fidex-node/internal/logging"
 	"fidex-node/internal/queue"
 	"fidex-node/internal/repository"
 )
+
+// logger is the package-level structured logger for container lifecycle events.
+var logger = logging.New("container")
 
 // Container holds all application dependencies and provides dependency injection
 type Container struct {
@@ -75,7 +79,7 @@ func NewContainer(cfg *config.Config) (*Container, error) {
 		return nil, fmt.Errorf("failed to initialize workers: %w", err)
 	}
 
-	log.Println("✓ Service container initialized successfully")
+	logger.Info(context.Background(), "✓ Service container initialized successfully")
 	return container, nil
 }
 
@@ -93,7 +97,7 @@ func (c *Container) initDatabase() error {
 	}
 
 	c.DB = conn
-	log.Println("✓ Database initialized")
+	logger.Info(context.Background(), "✓ Database initialized")
 	return nil
 }
 
@@ -105,7 +109,7 @@ func (c *Container) initRepositories() error {
 	c.UserRepo = repository.NewSQLiteUserRepository(c.DB)
 	c.SessionRepo = repository.NewSQLiteSessionRepository(c.DB)
 
-	log.Println("✓ Repositories initialized")
+	logger.Info(context.Background(), "✓ Repositories initialized")
 	return nil
 }
 
@@ -124,7 +128,7 @@ func (c *Container) initCryptoService() error {
 	}
 
 	c.CryptoService = engine
-	log.Println("✓ Crypto service initialized")
+	logger.Info(context.Background(), "✓ Crypto service initialized")
 	return nil
 }
 
@@ -145,7 +149,7 @@ func (c *Container) initDiscoveryService() error {
 	// Create discovery service
 	c.DiscoveryService = discovery.NewDiscoveryService(nodeConfig, c.TokenStore, c.PartnerRepo)
 
-	log.Println("✓ Discovery service initialized")
+	logger.Info(context.Background(), "✓ Discovery service initialized")
 	return nil
 }
 
@@ -163,30 +167,31 @@ func (c *Container) initWorkers() error {
 	c.WebSocketHub = dashboard.NewHub()
 	go c.WebSocketHub.Run()
 
-	log.Println("✓ Workers initialized")
+	logger.Info(context.Background(), "✓ Workers initialized")
 	return nil
 }
 
 // Close gracefully shuts down all services and closes connections
 func (c *Container) Close() error {
-	log.Println("Shutting down service container...")
+	ctx := context.Background()
+	logger.Info(ctx, "Shutting down service container...")
 
 	// Stop queue worker
 	if c.QueueWorker != nil {
-		log.Println("Stopping queue worker...")
+		logger.Info(ctx, "Stopping queue worker...")
 		c.QueueWorker.Stop()
 	}
 
 	// Close database connection
 	if c.DB != nil {
-		log.Println("Closing database connection...")
+		logger.Info(ctx, "Closing database connection...")
 		if err := c.DB.Close(); err != nil {
-			log.Printf("Error closing database: %v", err)
+			logger.Error(ctx, "Error closing database: %v", err)
 			return err
 		}
 	}
 
-	log.Println("✓ Service container shut down successfully")
+	logger.Info(ctx, "✓ Service container shut down successfully")
 	return nil
 }
 

@@ -15,13 +15,20 @@ import (
 	"fidex-node/internal/constants"
 	"fidex-node/internal/container"
 	"fidex-node/internal/crypto"
+	"fidex-node/internal/logging"
 	"fidex-node/internal/watcher"
 )
 
+// mainLogger is the structured logger used by the boot sequence and graceful
+// shutdown. must* helpers still call log.Fatalf to abort the process, per the
+// project convention "only main.go can panic".
+var mainLogger = logging.New("main")
+
 func main() {
-	log.Println("========================================")
-	log.Println("Starting FideX Edge Node...")
-	log.Println("========================================")
+	ctx := context.Background()
+	mainLogger.Info(ctx, "========================================")
+	mainLogger.Info(ctx, "Starting FideX Edge Node...")
+	mainLogger.Info(ctx, "========================================")
 
 	cfg := mustLoadConfig()
 	ensureKeysExist(cfg)
@@ -30,8 +37,8 @@ func main() {
 	appContainer := mustInitContainer(cfg)
 	handlers := buildHandlers(appContainer)
 
-	log.Println("Checking for default user...")
-	if err := handlers.InitializeDefaultUser(context.Background()); err != nil {
+	mainLogger.Info(ctx, "Checking for default user...")
+	if err := handlers.InitializeDefaultUser(ctx); err != nil {
 		log.Fatalf("Failed to initialize default user: %v", err)
 	}
 
@@ -40,22 +47,23 @@ func main() {
 
 	internalServer, publicServer := mustSetupServers(cfg, handlers)
 
-	log.Println("========================================")
-	log.Println("✓ FideX Edge Node is running!")
-	log.Println("========================================")
-	log.Println("Press Ctrl+C to gracefully shutdown...")
+	mainLogger.Info(ctx, "========================================")
+	mainLogger.Info(ctx, "✓ FideX Edge Node is running!")
+	mainLogger.Info(ctx, "========================================")
+	mainLogger.Info(ctx, "Press Ctrl+C to gracefully shutdown...")
 
 	runWithGracefulShutdown(internalServer, publicServer, fw, appContainer)
 }
 
 // mustLoadConfig loads node configuration or aborts.
 func mustLoadConfig() *config.Config {
-	log.Println("Loading configuration...")
+	ctx := context.Background()
+	mainLogger.Info(ctx, "Loading configuration...")
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
-	log.Printf("✓ Configuration loaded (Internal Port: %d, Public Port: %d)", cfg.InternalAPIPort, cfg.PublicAPIPort)
+	mainLogger.Info(ctx, "✓ Configuration loaded (Internal Port: %d, Public Port: %d)", cfg.InternalAPIPort, cfg.PublicAPIPort)
 	return cfg
 }
 
@@ -65,7 +73,8 @@ func ensureKeysExist(cfg *config.Config) {
 		return
 	}
 
-	log.Println("No private key found, generating RSA key pair...")
+	ctx := context.Background()
+	mainLogger.Info(ctx, "No private key found, generating RSA key pair...")
 	privateKeyPEM, publicKeyPEM, err := crypto.GenerateKeyPair()
 	if err != nil {
 		log.Fatalf("Failed to generate key pair: %v", err)
@@ -81,33 +90,26 @@ func ensureKeysExist(cfg *config.Config) {
 		log.Fatalf("Failed to save public key: %v", err)
 	}
 
-	log.Println("✓ RSA key pair generated and saved")
-	log.Println("========================================")
-	log.Println("⚠ IMPORTANT: New RSA key pair generated")
-	log.Printf("  Public key saved to: %s", cfg.PublicKeyPath)
-	log.Printf("  Private key saved to: %s (keep this secure!)", cfg.PrivateKeyPath)
-	log.Println("  Share your public key with trading partners via the JWKS endpoint")
-	log.Println("========================================")
+	mainLogger.Info(ctx, "✓ RSA key pair generated and saved")
+	mainLogger.Warn(ctx, "New RSA key pair generated. Public key: %s. Private key: %s (keep secure). Share public key via JWKS endpoint.",
+		cfg.PublicKeyPath, cfg.PrivateKeyPath)
 }
 
 func logAPIKeySecurityWarning() {
-	log.Println("========================================")
-	log.Println("⚠ SECURITY: Internal API Key")
-	log.Println("  Your internal API key is configured and active")
-	log.Println("  Access it via: FIDEX_API_KEY environment variable or config file")
-	log.Println("  Use it in requests: Authorization: Bearer <your-api-key>")
-	log.Println("  NEVER log or expose this key in production!")
-	log.Println("========================================")
+	mainLogger.Warn(context.Background(),
+		"Internal API key is active. Configure via FIDEX_API_KEY env or config file. "+
+			"Use Authorization: Bearer <key>. Never log this value in production.")
 }
 
 // mustInitContainer wires the service container and aborts on failure.
 func mustInitContainer(cfg *config.Config) *container.Container {
-	log.Println("Initializing service container...")
+	ctx := context.Background()
+	mainLogger.Info(ctx, "Initializing service container...")
 	c, err := container.NewContainer(cfg)
 	if err != nil {
 		log.Fatalf("Failed to initialize container: %v", err)
 	}
-	log.Println("✓ Service container initialized")
+	mainLogger.Info(ctx, "✓ Service container initialized")
 	return c
 }
 
@@ -129,7 +131,8 @@ func buildHandlers(c *container.Container) *api.Handlers {
 
 // mustStartFileWatcher boots the inbox watcher or aborts.
 func mustStartFileWatcher(c *container.Container) *watcher.FileWatcher {
-	log.Println("Starting file watcher...")
+	ctx := context.Background()
+	mainLogger.Info(ctx, "Starting file watcher...")
 	fw, err := watcher.NewFileWatcher(c.MessageRepo)
 	if err != nil {
 		log.Fatalf("Failed to create file watcher: %v", err)
@@ -137,20 +140,21 @@ func mustStartFileWatcher(c *container.Container) *watcher.FileWatcher {
 	if err := fw.Start(); err != nil {
 		log.Fatalf("Failed to start file watcher: %v", err)
 	}
-	log.Println("✓ File watcher started")
+	mainLogger.Info(ctx, "✓ File watcher started")
 	return fw
 }
 
 // startSessionCleanup launches the background goroutine that prunes expired sessions hourly.
 func startSessionCleanup(c *container.Container) {
 	go func() {
+		ctx := context.Background()
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
-			if err := c.AuthService.CleanupExpiredSessions(context.Background()); err != nil {
-				log.Printf("ERROR: Failed to cleanup expired sessions: %v", err)
+			if err := c.AuthService.CleanupExpiredSessions(ctx); err != nil {
+				mainLogger.Error(ctx, "Failed to cleanup expired sessions: %v", err)
 			} else {
-				log.Println("✓ Expired sessions cleaned up")
+				mainLogger.Info(ctx, "✓ Expired sessions cleaned up")
 			}
 		}
 	}()
@@ -159,11 +163,12 @@ func startSessionCleanup(c *container.Container) {
 // mustSetupServers builds the internal and public HTTP servers, parses the IP
 // allowlist, mounts feature routers, and starts both listeners in background.
 func mustSetupServers(cfg *config.Config, h *api.Handlers) (*http.Server, *http.Server) {
+	ctx := context.Background()
 	allowedIPs, err := api.ParseAllowedIPs(cfg.AllowedIPsString())
 	if err != nil {
 		log.Fatalf("Failed to parse allowed IPs: %v", err)
 	}
-	log.Printf("✓ IP Allowlist: %v (Enabled: %v)", cfg.AllowedIPAddresses, cfg.EnableIPAllowlist)
+	mainLogger.Info(ctx, "✓ IP Allowlist: %v (Enabled: %v)", cfg.AllowedIPAddresses, cfg.EnableIPAllowlist)
 
 	internalRouter := h.SetupInternalRouter(allowedIPs, cfg.InternalAPIKey, cfg.EnableIPAllowlist)
 	publicRouter := h.SetupPublicRouter()
@@ -184,25 +189,27 @@ func mustSetupServers(cfg *config.Config, h *api.Handlers) (*http.Server, *http.
 	}
 
 	go func() {
-		log.Printf("Starting Internal API Server on %s", internalServer.Addr)
-		log.Printf("  - POST %s%s (Protected: IP Allowlist + API Key)", constants.APIV1, constants.RouteTransmitRel)
-		log.Printf("  - GET  %s (Frontend Constants API)", "/api/constants")
-		log.Printf("  - *    %s* (Auth APIs)", constants.APIAuth+"/*")
-		log.Printf("  - *    %s* (Dashboard APIs)", constants.APIDashboard+"/*")
-		log.Printf("  - *    %s* (Settings APIs)", constants.APISettings+"/*")
+		ctx := context.Background()
+		mainLogger.Info(ctx, "Starting Internal API Server on %s", internalServer.Addr)
+		mainLogger.Info(ctx, "  - POST %s%s (Protected: IP Allowlist + API Key)", constants.APIV1, constants.RouteTransmitRel)
+		mainLogger.Info(ctx, "  - GET  %s (Frontend Constants API)", "/api/constants")
+		mainLogger.Info(ctx, "  - *    %s* (Auth APIs)", constants.APIAuth+"/*")
+		mainLogger.Info(ctx, "  - *    %s* (Dashboard APIs)", constants.APIDashboard+"/*")
+		mainLogger.Info(ctx, "  - *    %s* (Settings APIs)", constants.APISettings+"/*")
 		if err := internalServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Internal server error: %v", err)
 		}
 	}()
 
 	go func() {
-		log.Printf("Starting Public API Server on %s", publicServer.Addr)
-		log.Printf("  - GET  %s", constants.RouteHealth)
-		log.Printf("  - POST %s%s", constants.APIV1, constants.RouteInboundRel)
-		log.Printf("  - POST %s%s", constants.APIV1, constants.RouteReceiptRel)
-		log.Printf("  - POST %s%s", constants.APIV1, constants.RouteRegisterRel)
-		log.Printf("  - GET  %s", constants.RouteJWKS)
-		log.Printf("  - GET  %s", constants.RouteAS5Configuration)
+		ctx := context.Background()
+		mainLogger.Info(ctx, "Starting Public API Server on %s", publicServer.Addr)
+		mainLogger.Info(ctx, "  - GET  %s", constants.RouteHealth)
+		mainLogger.Info(ctx, "  - POST %s%s", constants.APIV1, constants.RouteInboundRel)
+		mainLogger.Info(ctx, "  - POST %s%s", constants.APIV1, constants.RouteReceiptRel)
+		mainLogger.Info(ctx, "  - POST %s%s", constants.APIV1, constants.RouteRegisterRel)
+		mainLogger.Info(ctx, "  - GET  %s", constants.RouteJWKS)
+		mainLogger.Info(ctx, "  - GET  %s", constants.RouteAS5Configuration)
 		if err := publicServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Public server error: %v", err)
 		}
@@ -222,42 +229,42 @@ func runWithGracefulShutdown(
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("\n========================================")
-	log.Println("Shutting down FideX Edge Node...")
-	log.Println("========================================")
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	log.Println("Stopping file watcher...")
+	mainLogger.Info(ctx, "========================================")
+	mainLogger.Info(ctx, "Shutting down FideX Edge Node...")
+	mainLogger.Info(ctx, "========================================")
+
+	mainLogger.Info(ctx, "Stopping file watcher...")
 	if err := fw.Stop(); err != nil {
-		log.Printf("Error stopping file watcher: %v", err)
+		mainLogger.Error(ctx, "Error stopping file watcher: %v", err)
 	} else {
-		log.Println("✓ File watcher stopped")
+		mainLogger.Info(ctx, "✓ File watcher stopped")
 	}
 
-	log.Println("Stopping service container...")
+	mainLogger.Info(ctx, "Stopping service container...")
 	if err := c.Close(); err != nil {
-		log.Printf("Error stopping container: %v", err)
+		mainLogger.Error(ctx, "Error stopping container: %v", err)
 	} else {
-		log.Println("✓ Service container stopped")
+		mainLogger.Info(ctx, "✓ Service container stopped")
 	}
 
-	log.Println("Stopping internal API server...")
+	mainLogger.Info(ctx, "Stopping internal API server...")
 	if err := internalServer.Shutdown(ctx); err != nil {
-		log.Printf("Error shutting down internal server: %v", err)
+		mainLogger.Error(ctx, "Error shutting down internal server: %v", err)
 	} else {
-		log.Println("✓ Internal API server stopped")
+		mainLogger.Info(ctx, "✓ Internal API server stopped")
 	}
 
-	log.Println("Stopping public API server...")
+	mainLogger.Info(ctx, "Stopping public API server...")
 	if err := publicServer.Shutdown(ctx); err != nil {
-		log.Printf("Error shutting down public server: %v", err)
+		mainLogger.Error(ctx, "Error shutting down public server: %v", err)
 	} else {
-		log.Println("✓ Public API server stopped")
+		mainLogger.Info(ctx, "✓ Public API server stopped")
 	}
 
-	log.Println("========================================")
-	log.Println("✓ FideX Edge Node shut down successfully")
-	log.Println("========================================")
+	mainLogger.Info(ctx, "========================================")
+	mainLogger.Info(ctx, "✓ FideX Edge Node shut down successfully")
+	mainLogger.Info(ctx, "========================================")
 }

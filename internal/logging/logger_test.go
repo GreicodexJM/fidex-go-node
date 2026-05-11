@@ -93,7 +93,7 @@ func TestLogger_WithFormatting(t *testing.T) {
 
 func TestLogger_WithRequestID(t *testing.T) {
 	logger := New("test")
-	ctx := context.WithValue(context.Background(), "request_id", "req-12345")
+	ctx := context.WithValue(context.Background(), RequestIDKey, "req-12345")
 
 	output := captureLog(func() {
 		logger.Info(ctx, "test message")
@@ -105,7 +105,7 @@ func TestLogger_WithRequestID(t *testing.T) {
 
 func TestLogger_WithUserID(t *testing.T) {
 	logger := New("test")
-	ctx := context.WithValue(context.Background(), "user_id", int64(42))
+	ctx := context.WithValue(context.Background(), UserIDKey, int64(42))
 
 	output := captureLog(func() {
 		logger.Info(ctx, "test message")
@@ -117,8 +117,8 @@ func TestLogger_WithUserID(t *testing.T) {
 
 func TestLogger_WithRequestIDAndUserID(t *testing.T) {
 	logger := New("test")
-	ctx := context.WithValue(context.Background(), "request_id", "req-999")
-	ctx = context.WithValue(ctx, "user_id", int64(100))
+	ctx := context.WithValue(context.Background(), RequestIDKey, "req-999")
+	ctx = context.WithValue(ctx, UserIDKey, int64(100))
 
 	output := captureLog(func() {
 		logger.Info(ctx, "authenticated request")
@@ -187,7 +187,7 @@ func TestLogger_LogFormat(t *testing.T) {
 }
 
 func TestExtractRequestID_ValidContext(t *testing.T) {
-	ctx := context.WithValue(context.Background(), "request_id", "test-req-id")
+	ctx := context.WithValue(context.Background(), RequestIDKey, "test-req-id")
 
 	requestID := extractRequestID(ctx)
 
@@ -203,7 +203,7 @@ func TestExtractRequestID_MissingKey(t *testing.T) {
 }
 
 func TestExtractRequestID_WrongType(t *testing.T) {
-	ctx := context.WithValue(context.Background(), "request_id", 12345)
+	ctx := context.WithValue(context.Background(), RequestIDKey, 12345)
 
 	requestID := extractRequestID(ctx)
 
@@ -217,7 +217,7 @@ func TestExtractRequestID_NilContext(t *testing.T) {
 }
 
 func TestExtractUserID_ValidContext(t *testing.T) {
-	ctx := context.WithValue(context.Background(), "user_id", int64(789))
+	ctx := context.WithValue(context.Background(), UserIDKey, int64(789))
 
 	userID := extractUserID(ctx)
 
@@ -233,7 +233,7 @@ func TestExtractUserID_MissingKey(t *testing.T) {
 }
 
 func TestExtractUserID_WrongType(t *testing.T) {
-	ctx := context.WithValue(context.Background(), "user_id", "not-an-int")
+	ctx := context.WithValue(context.Background(), UserIDKey, "not-an-int")
 
 	userID := extractUserID(ctx)
 

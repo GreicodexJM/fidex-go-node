@@ -8,7 +8,13 @@ import (
 	"fidex-node/internal/dashboard"
 	"fidex-node/internal/discovery"
 	"fidex-node/internal/domain"
+	"fidex-node/internal/logging"
 )
+
+// logger is the package-level structured logger used by all api handlers,
+// middleware, and routers. It honours request_id / user_id carried in
+// request contexts (see internal/api/context.go and internal/logging).
+var logger = logging.New("api")
 
 // Handlers carries all dependencies required by HTTP handlers in this package.
 // It replaces the transitional package-level vars (api.DB, api.MessageRepo, …)

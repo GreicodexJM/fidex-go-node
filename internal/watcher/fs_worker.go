@@ -4,17 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"fidex-node/internal/domain"
+	"fidex-node/internal/logging"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/google/uuid"
 )
+
+// logger is the package-level structured logger for the file watcher.
+var logger = logging.New("watcher")
 
 const (
 	outboxDir  = "./fidex/outbox"
@@ -58,7 +61,7 @@ func (fw *FileWatcher) Start() error {
 		return fmt.Errorf("failed to watch outbox directory: %w", err)
 	}
 
-	log.Printf("File watcher started, monitoring: %s", outboxDir)
+	logger.Info(context.Background(), "File watcher started, monitoring: %s", outboxDir)
 
 	// Start the event loop in a goroutine
 	go fw.watchLoop()
@@ -74,6 +77,7 @@ func (fw *FileWatcher) Stop() error {
 
 // watchLoop is the main event loop that processes file system events
 func (fw *FileWatcher) watchLoop() {
+	ctx := context.Background()
 	// Debouncing map to track recently processed files
 	processedFiles := make(map[string]time.Time)
 	debounceDelay := 500 * time.Millisecond
@@ -100,7 +104,7 @@ func (fw *FileWatcher) watchLoop() {
 
 					// Process the file
 					if err := fw.processFile(event.Name); err != nil {
-						log.Printf("Error processing file %s: %v", event.Name, err)
+						logger.Error(ctx, "Error processing file %s: %v", event.Name, err)
 					}
 
 					// Clean up old entries from the debouncing map
@@ -112,10 +116,10 @@ func (fw *FileWatcher) watchLoop() {
 			if !ok {
 				return
 			}
-			log.Printf("File watcher error: %v", err)
+			logger.Error(ctx, "File watcher error: %v", err)
 
 		case <-fw.done:
-			log.Println("File watcher stopped")
+			logger.Info(ctx, "File watcher stopped")
 			return
 		}
 	}
@@ -131,7 +135,8 @@ type TransmitRequest struct {
 
 // processFile reads, validates, and processes a JSON file from the outbox
 func (fw *FileWatcher) processFile(filePath string) error {
-	log.Printf("Processing file: %s", filePath)
+	ctx := context.Background()
+	logger.Info(ctx, "Processing file: %s", filePath)
 
 	// Wait a bit to ensure the file is fully written
 	time.Sleep(100 * time.Millisecond)
@@ -166,11 +171,11 @@ func (fw *FileWatcher) processFile(filePath string) error {
 	}
 
 	// Save via repository
-	if err := fw.messageRepo.Create(context.Background(), msg); err != nil {
+	if err := fw.messageRepo.Create(ctx, msg); err != nil {
 		return fmt.Errorf("failed to insert message into database: %w", err)
 	}
 
-	log.Printf("Message saved to database with ID: %s", messageID)
+	logger.Info(ctx, "Message saved to database with ID: %s", messageID)
 
 	// Move the file to the archive directory
 	archivePath := filepath.Join(archiveDir, fmt.Sprintf("%s.json", messageID))
@@ -180,11 +185,11 @@ func (fw *FileWatcher) processFile(filePath string) error {
 			return fmt.Errorf("failed to archive file: %w", err)
 		}
 		if err := os.Remove(filePath); err != nil {
-			log.Printf("Warning: failed to remove original file %s: %v", filePath, err)
+			logger.Warn(ctx, "Failed to remove original file %s: %v", filePath, err)
 		}
 	}
 
-	log.Printf("File archived to: %s", archivePath)
+	logger.Info(ctx, "File archived to: %s", archivePath)
 	return nil
 }
 
@@ -200,13 +205,14 @@ func (fw *FileWatcher) cleanupProcessedFiles(processedFiles map[string]time.Time
 
 // ensureDirectories creates the outbox and archive directories if they don't exist
 func ensureDirectories() error {
+	ctx := context.Background()
 	directories := []string{outboxDir, archiveDir}
 
 	for _, dir := range directories {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return fmt.Errorf("failed to create directory %s: %w", dir, err)
 		}
-		log.Printf("Directory ready: %s", dir)
+		logger.Info(ctx, "Directory ready: %s", dir)
 	}
 
 	return nil

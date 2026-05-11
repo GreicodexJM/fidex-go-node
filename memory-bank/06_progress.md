@@ -2,7 +2,7 @@
 
 ## Overall Status
 **Current Phase**: Phase 1 - Foundation Improvements
-**Progress**: ~75% (Phase 1.3 merged to master; Phase 1.4 complete on branch `feature/phase-1.4-api-handlers-struct`; Phase 1.6 next)
+**Progress**: ~95% (Phase 1.1–1.5, 1.7 done; Phase 1.4 merged to master; Phase 1.6 complete on branch `feature/phase-1.6-structured-logging`)
 **Last Updated**: 2026-05-11
 
 ## Phase 1: Foundation Improvements (In Progress)
@@ -64,15 +64,17 @@
 - [x] Test configuration loading (all tests passing)
 - [x] Configuration precedence working correctly
 
-### 1.6 Implement Structured Logging 🔜
-**Status**: Not started
-**Files**: `internal/logger/logger.go`
-- [ ] Create Logger interface
-- [ ] Implement structured logger
-- [ ] Add log levels (DEBUG, INFO, WARN, ERROR)
-- [ ] Add context-aware logging
-- [ ] Replace all log.Printf calls
-- [ ] Never log sensitive data
+### 1.6 Implement Structured Logging ✅
+**Status**: Complete (2026-05-11, branch `feature/phase-1.6-structured-logging`)
+**Files**: `internal/logging/logger.go` (existed; fixed context-key bug, added `WithRequestID`/`WithUserID` helpers); per-package logger instances added to `internal/api/api_handlers.go`, `internal/auth/middleware.go`, `internal/container/container.go`, `internal/dashboard/websocket.go`, `internal/discovery/service.go`, `internal/queue/worker.go`, `internal/watcher/fs_worker.go`, `cmd/fidex-node/main.go`. `internal/api/context.go` re-exports the typed keys from logging.
+- [x] Logger struct + Info/Warn/Error/Debug methods (already existed)
+- [x] Log levels (DEBUG, INFO, WARN, ERROR)
+- [x] Context-aware logging (request_id + user_id auto-injected)
+- [x] Fix bug: typed ContextKey unified across `logging` and `api` packages
+- [x] `auth.RequireAuth*` middleware seeds user_id into context for downstream log enrichment
+- [x] Replaced ~210 `log.Printf`/`log.Println` calls in production code (test files untouched)
+- [x] `log.Fatalf` retained only in main.go `must*` helpers (project convention)
+- [x] Never logs sensitive data (API keys / passwords) — logAPIKeySecurityWarning prints policy, not the key
 
 ### 1.7 Security Hardening ✅
 **Status**: Complete
