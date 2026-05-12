@@ -36,11 +36,20 @@ type AS5Endpoints struct {
 }
 
 // AS5SecurityConfig declares the crypto algorithms this node supports.
+//
+// EncryptionAlgorithm is the historical single-value field per spec §6.2 and
+// remains the back-compat anchor: partners that only know about a single
+// algorithm read this field. SupportedEncryptionAlgorithms is the newer,
+// additive advertisement introduced for FID-4 (ADR-0003) so that peers
+// negotiating capabilities can pick the strongest mutually-supported alg
+// (e.g. RSA-OAEP-256). Older peers ignore the array. See spec §5.2 and JWA
+// RFC 7518 §4.2 / §4.3 for algorithm semantics.
 type AS5SecurityConfig struct {
-	SignatureAlgorithm  string `json:"signature_algorithm"`
-	EncryptionAlgorithm string `json:"encryption_algorithm"`
-	ContentEncryption   string `json:"content_encryption"`
-	MinimumKeySize      int    `json:"minimum_key_size"`
+	SignatureAlgorithm            string   `json:"signature_algorithm"`
+	EncryptionAlgorithm           string   `json:"encryption_algorithm"`
+	SupportedEncryptionAlgorithms []string `json:"supported_encryption_algorithms,omitempty"`
+	ContentEncryption             string   `json:"content_encryption"`
+	MinimumKeySize                int      `json:"minimum_key_size"`
 }
 
 // NodeConfig holds the node's configuration for discovery.
@@ -81,8 +90,12 @@ func GenerateAS5Config(config NodeConfig) *AS5Configuration {
 		Security: AS5SecurityConfig{
 			SignatureAlgorithm:  "RS256",
 			EncryptionAlgorithm: "RSA-OAEP",
-			ContentEncryption:   "A256GCM",
-			MinimumKeySize:      2048,
+			// Advertise dual support (ADR-0003 / FID-4). The single
+			// EncryptionAlgorithm field stays "RSA-OAEP" so legacy peers
+			// that only read that field keep working unchanged.
+			SupportedEncryptionAlgorithms: []string{"RSA-OAEP", "RSA-OAEP-256"},
+			ContentEncryption:             "A256GCM",
+			MinimumKeySize:                2048,
 		},
 	}
 }
@@ -137,6 +150,35 @@ func validateAS5Config(config *AS5Configuration) error {
 	}
 	if config.Endpoints.Register == "" {
 		return fmt.Errorf("endpoints.register is required")
+	}
+	return nil
+}
+
+// ResolveSupportedEncryptionAlgorithms returns the list of encryption
+// algorithms a partner supports, honouring the back-compat rules in
+// ADR-0003 (FID-4):
+//
+//   - If the newer supported_encryption_algorithms array is present, it is
+//     used verbatim (the source of truth).
+//   - Otherwise the single legacy encryption_algorithm string is wrapped
+//     into a one-element slice.
+//   - If neither is set the function returns an empty slice — callers
+//     should treat that as "peer didn't tell us, assume RSA-OAEP".
+//
+// This helper is the canonical way to read an AS5 partner's encryption
+// capability before negotiating an algorithm.
+func ResolveSupportedEncryptionAlgorithms(cfg *AS5Configuration) []string {
+	if cfg == nil {
+		return nil
+	}
+	if len(cfg.Security.SupportedEncryptionAlgorithms) > 0 {
+		// Defensive copy so callers can mutate without aliasing the cfg.
+		out := make([]string, len(cfg.Security.SupportedEncryptionAlgorithms))
+		copy(out, cfg.Security.SupportedEncryptionAlgorithms)
+		return out
+	}
+	if cfg.Security.EncryptionAlgorithm != "" {
+		return []string{cfg.Security.EncryptionAlgorithm}
 	}
 	return nil
 }

@@ -33,6 +33,7 @@ Proposed  ─┬─►  Accepted  ─►  Superseded
 | ----- | --------------------------------------------------------------------- | -------- |
 | 0001  | Template                                                              | —        |
 | 0002  | Worker job_type — column vs payload-peek dispatch                     | Proposed |
+| 0003  | Dual encryption algorithm support (RSA-OAEP + RSA-OAEP-256)           | Accepted |
 
 ## Authoring tips
 

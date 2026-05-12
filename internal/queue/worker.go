@@ -278,7 +278,23 @@ func (w *Worker) deliverBusinessDocument(ctx context.Context, msg *domain.Messag
 	if w.cryptoEngine == nil {
 		return errors.Validation("crypto engine not configured on worker")
 	}
-	jwePayload, err := w.cryptoEngine.SignAndEncrypt(queued.Payload, encKey)
+
+	// FID-4 / ADR-0003: pick the strongest mutually-supported JWE
+	// key-encryption algorithm. Partners without an advertised list (or
+	// pre-FID-4 rows) negotiate down to plain RSA-OAEP, preserving wire
+	// compatibility with the original spec §5 behaviour.
+	negotiatedAlg, err := crypto.NegotiateEncryptionAlgorithm(
+		crypto.LocalSupportedEncryptionAlgorithms(),
+		partner.SupportedEncryptionAlgorithms,
+	)
+	if err != nil {
+		return errors.Wrap(err, errors.ErrCodeValidation,
+			"failed to negotiate encryption algorithm with partner")
+	}
+	logger.Info(ctx, "Message %s: negotiated alg=%s for partner %s (peer advertised=%v)",
+		msg.MessageID, negotiatedAlg, partner.PartnerID, partner.SupportedEncryptionAlgorithms)
+
+	jwePayload, err := w.cryptoEngine.SignAndEncryptWithAlg(queued.Payload, encKey, negotiatedAlg)
 	if err != nil {
 		return errors.InternalWrap(err, "failed to sign+encrypt business document")
 	}

@@ -21,6 +21,35 @@ type AS5Engine struct {
 	nodeID     string
 }
 
+// Supported encryption algorithm names exchanged at the wire / AS5 layer.
+// These mirror the JWA registry strings (RFC 7518 §4) and are what peers
+// publish in their AS5 supported_encryption_algorithms array. Keep these
+// in sync with the AS5 advertisement in
+// internal/discovery/as5_config.go.
+const (
+	// AlgRSAOAEP is RSA-OAEP with MGF1+SHA-1 (RFC 7518 §4.2). Default for
+	// back-compat with legacy peers that pre-date dual-alg advertisement.
+	AlgRSAOAEP = "RSA-OAEP"
+	// AlgRSAOAEP256 is RSA-OAEP with MGF1+SHA-256 (RFC 7518 §4.3).
+	// Preferred when both peers advertise it (NIST is deprecating SHA-1).
+	AlgRSAOAEP256 = "RSA-OAEP-256"
+)
+
+// joseKeyAlgorithm maps a wire-level alg string to the go-jose constant
+// used by the encrypter. Unknown algs return an error so we never silently
+// downgrade to a default that the caller didn't ask for.
+func joseKeyAlgorithm(alg string) (jose.KeyAlgorithm, error) {
+	switch alg {
+	case "", AlgRSAOAEP:
+		return jose.RSA_OAEP, nil
+	case AlgRSAOAEP256:
+		return jose.RSA_OAEP_256, nil
+	default:
+		return "", fmt.Errorf("unsupported encryption algorithm %q (want %s or %s)",
+			alg, AlgRSAOAEP, AlgRSAOAEP256)
+	}
+}
+
 // RoutingHeader represents the FideX routing metadata
 type RoutingHeader struct {
 	FidexVersion   string `json:"fidex_version"`
@@ -105,10 +134,27 @@ func GenerateKeyPair() (privateKeyPEM, publicKeyPEM string, err error) {
 	return privateKeyPEM, publicKeyPEM, nil
 }
 
-// SignAndEncrypt performs the complete FideX encryption workflow
+// SignAndEncrypt performs the complete FideX encryption workflow using the
+// default RSA-OAEP (SHA-1) algorithm. Preserved for back-compat with
+// callers that pre-date FID-4 / ADR-0003 capability negotiation.
+//
 // Step 1: Hash and sign the payload with sender's private key (JWS)
 // Step 2: Encrypt the JWS with receiver's public key (JWE)
 func (e *AS5Engine) SignAndEncrypt(payload []byte, receiverPublicKey *rsa.PublicKey) (string, error) {
+	return e.SignAndEncryptWithAlg(payload, receiverPublicKey, AlgRSAOAEP)
+}
+
+// SignAndEncryptWithAlg is the alg-aware variant of SignAndEncrypt. It
+// drives the JWE key-encryption algorithm from the alg argument so callers
+// (e.g. the queue worker) can pick the strongest mutually-supported
+// algorithm per FID-4 / ADR-0003 negotiation. Empty or "RSA-OAEP" keeps
+// the historical SHA-1 path; "RSA-OAEP-256" switches to SHA-256.
+func (e *AS5Engine) SignAndEncryptWithAlg(payload []byte, receiverPublicKey *rsa.PublicKey, alg string) (string, error) {
+	keyAlg, err := joseKeyAlgorithm(alg)
+	if err != nil {
+		return "", err
+	}
+
 	// Step 1: Sign the payload (create JWS)
 	signer, err := jose.NewSigner(
 		jose.SigningKey{
@@ -133,11 +179,11 @@ func (e *AS5Engine) SignAndEncrypt(payload []byte, receiverPublicKey *rsa.Public
 		return "", fmt.Errorf("failed to serialize JWS: %w", err)
 	}
 
-	// Step 2: Encrypt the JWS (create JWE)
+	// Step 2: Encrypt the JWS (create JWE) with the negotiated algorithm.
 	encrypter, err := jose.NewEncrypter(
 		jose.A256GCM,
 		jose.Recipient{
-			Algorithm: jose.RSA_OAEP,
+			Algorithm: keyAlg,
 			Key:       receiverPublicKey,
 		},
 		nil,
@@ -161,12 +207,73 @@ func (e *AS5Engine) SignAndEncrypt(payload []byte, receiverPublicKey *rsa.Public
 	return jweCompact, nil
 }
 
+// NegotiateEncryptionAlgorithm picks the strongest mutually-supported JWE
+// key-encryption algorithm between our list and the peer's list, per ADR-0003.
+//
+// Selection rules (deterministic):
+//
+//  1. If both peers advertise RSA-OAEP-256, return RSA-OAEP-256.
+//  2. Else if both advertise RSA-OAEP, return RSA-OAEP.
+//  3. Else if the peer didn't advertise anything (empty list), fall back
+//     to RSA-OAEP for back-compat (legacy partners using only the
+//     single encryption_algorithm field route through this case).
+//  4. Else there is no overlap — return the empty string and a non-nil
+//     error so the worker can mark the row FAILED rather than guess.
+//
+// `ours` is typically the local node's static support list
+// ([]string{AlgRSAOAEP, AlgRSAOAEP256}). `theirs` comes from the
+// partner's AS5 advertisement, resolved via
+// discovery.ResolveSupportedEncryptionAlgorithms.
+func NegotiateEncryptionAlgorithm(ours, theirs []string) (string, error) {
+	has := func(list []string, want string) bool {
+		for _, a := range list {
+			if a == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	if len(theirs) == 0 {
+		// Legacy peer with no advertisement: assume RSA-OAEP (the only
+		// algorithm the original spec §5 mandates). Verify we actually
+		// support it locally before claiming so.
+		if has(ours, AlgRSAOAEP) {
+			return AlgRSAOAEP, nil
+		}
+		return "", fmt.Errorf("peer advertised no encryption algorithms and local node does not support %s", AlgRSAOAEP)
+	}
+
+	if has(ours, AlgRSAOAEP256) && has(theirs, AlgRSAOAEP256) {
+		return AlgRSAOAEP256, nil
+	}
+	if has(ours, AlgRSAOAEP) && has(theirs, AlgRSAOAEP) {
+		return AlgRSAOAEP, nil
+	}
+	return "", fmt.Errorf("no mutually supported encryption algorithm (ours=%v, theirs=%v)", ours, theirs)
+}
+
+// LocalSupportedEncryptionAlgorithms returns the static list of encryption
+// algorithms this node can speak on the wire. The order is significant
+// only for documentation; NegotiateEncryptionAlgorithm explicitly prefers
+// RSA-OAEP-256 regardless of slice ordering.
+func LocalSupportedEncryptionAlgorithms() []string {
+	return []string{AlgRSAOAEP, AlgRSAOAEP256}
+}
+
 // DecryptAndVerify performs the complete FideX decryption workflow
 // Step 1: Decrypt the JWE with receiver's private key
 // Step 2: Verify the JWS signature with sender's public key
 func (e *AS5Engine) DecryptAndVerify(jweCompact string, senderPublicKey *rsa.PublicKey) (payload []byte, err error) {
-	// Step 1: Decrypt the JWE
-	jwe, err := jose.ParseEncrypted(jweCompact, []jose.KeyAlgorithm{jose.RSA_OAEP}, []jose.ContentEncryption{jose.A256GCM})
+	// Step 1: Decrypt the JWE. We accept both RSA-OAEP (SHA-1) and
+	// RSA-OAEP-256 here — the inbound peer chose the algorithm based on
+	// its negotiation; we never refuse a stronger alg just because we
+	// only emit the weaker one. See ADR-0003 / FID-4.
+	jwe, err := jose.ParseEncrypted(
+		jweCompact,
+		[]jose.KeyAlgorithm{jose.RSA_OAEP, jose.RSA_OAEP_256},
+		[]jose.ContentEncryption{jose.A256GCM},
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse JWE: %w", err)
 	}

@@ -60,9 +60,18 @@ type Partner struct {
 	MessageEndpoint    string     `json:"message_endpoint"`
 	MDNReceiptEndpoint string     `json:"mdn_receipt_endpoint"`
 	PublicKeyJWKS      string     `json:"public_key_jwks"`
-	LastKeyRefresh     *time.Time `json:"last_key_refresh"`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
+	// SupportedEncryptionAlgorithms is the partner's advertised JWE
+	// key-encryption capability per ADR-0003 / FID-4. It is intentionally
+	// NOT persisted in the trading_partners SQL row (schema is owned by
+	// FID-6 and locked for this PR); the field is hydrated in-memory
+	// whenever the AS5 config is fetched (handshake / refresh). When it
+	// is empty, the queue worker falls back to plain RSA-OAEP for
+	// back-compat with peers that registered before this field existed.
+	// Persistence is tracked as a follow-up (see ADR-0003 §Consequences).
+	SupportedEncryptionAlgorithms []string   `json:"supported_encryption_algorithms,omitempty"`
+	LastKeyRefresh                *time.Time `json:"last_key_refresh"`
+	CreatedAt                     time.Time  `json:"created_at"`
+	UpdatedAt                     time.Time  `json:"updated_at"`
 }
 
 // User represents a dashboard user
