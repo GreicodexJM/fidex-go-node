@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"fidex-node/internal/constants"
 	"fidex-node/internal/crypto"
 	"fidex-node/internal/domain"
 	"fidex-node/internal/errors"
@@ -48,6 +49,16 @@ func (m *mockMessageRepository) ListByStatus(ctx context.Context, status domain.
 	var result []*domain.Message
 	for _, msg := range m.messages {
 		if msg.Status == status {
+			result = append(result, msg)
+		}
+	}
+	return result, nil
+}
+
+func (m *mockMessageRepository) ListByStatusAndJobType(ctx context.Context, status domain.MessageStatus, jobType string) ([]*domain.Message, error) {
+	var result []*domain.Message
+	for _, msg := range m.messages {
+		if msg.Status == status && msg.JobType == jobType {
 			result = append(result, msg)
 		}
 	}
@@ -193,7 +204,9 @@ func (m *mockPartnerRepository) List(ctx context.Context) ([]*domain.Partner, er
 // Helper to create test message with envelope
 // createTestMessage builds a queued outbound row in the shape the worker
 // expects: a TransmitRequest-like JSON with destination_partner_id and a
-// business document under "payload".
+// business document under "payload". Per ADR-0002 the row also carries
+// JobType=process_outbound on the column so dispatch routes correctly
+// without falling back to the payload-peek compat path.
 func createTestMessage(messageID, partnerID string) *domain.Message {
 	queued := queuedOutboundPayload{
 		DestinationPartnerID: partnerID,
@@ -206,6 +219,7 @@ func createTestMessage(messageID, partnerID string) *domain.Message {
 		Direction: domain.DirectionOutbound,
 		Status:    domain.StatusQueued,
 		Payload:   string(payload),
+		JobType:   constants.JobTypeProcessOutbound,
 	}
 }
 
@@ -644,7 +658,9 @@ func TestWorker_HTTPTimeout(t *testing.T) {
 }
 
 // createJMDNJobMessage builds a queued send_jmdn row in the shape the
-// inbound handler now produces for the worker to consume.
+// inbound handler now produces for the worker to consume. Per ADR-0002
+// the row carries JobType=send_jmdn on the column itself; the JSON
+// payload retains the redundant job_type for cross-system portability.
 func createJMDNJobMessage(jobID, originalMessageID, recipientPartnerID string) *domain.Message {
 	job := queuedJMDNJob{
 		JobType:            "send_jmdn",
@@ -659,6 +675,7 @@ func createJMDNJobMessage(jobID, originalMessageID, recipientPartnerID string) *
 		Direction: domain.DirectionOutbound,
 		Status:    domain.StatusQueued,
 		Payload:   string(payload),
+		JobType:   constants.JobTypeSendJMDN,
 	}
 }
 
@@ -753,4 +770,125 @@ func TestWorker_DeliverJMDN_NoCryptoEngine(t *testing.T) {
 	job := createJMDNJobMessage("jmdn-job-3", "orig-msg-003", "urn:test:sender")
 	err := worker.deliverMessage(context.Background(), job)
 	assert.Error(t, err)
+}
+
+// TestWorker_Dispatch_UsesJobTypeColumn asserts that dispatch routes on
+// the canonical column value, not the JSON-payload copy. We deliberately
+// build a row whose column says send_jmdn but whose JSON payload looks
+// like a business-document transmit — only the column-driven branch can
+// route this to deliverJMDN.
+func TestWorker_Dispatch_UsesJobTypeColumn(t *testing.T) {
+	engine, _ := makeTestEngineAndJWKS(t, "nut-test")
+
+	var hitReceipt bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitReceipt = true
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	msgRepo := &mockMessageRepository{messages: make(map[string]*domain.Message)}
+	partnerRepo := &mockPartnerRepository{
+		partners: map[string]*domain.Partner{
+			"urn:test:sender": {
+				PartnerID:          "urn:test:sender",
+				MDNReceiptEndpoint: server.URL,
+			},
+		},
+	}
+
+	worker := NewWorker(msgRepo, partnerRepo, engine)
+	worker.SetNodeID("urn:test:nut")
+
+	// Payload shape is the J-MDN job (so deliverJMDN can parse it) but we
+	// intentionally do NOT include a job_type inside the JSON. The only
+	// signal saying "this is a J-MDN" is the column.
+	job := queuedJMDNJob{
+		OriginalMessageID:  "orig-col-001",
+		RecipientPartnerID: "urn:test:sender",
+		Status:             "processed",
+		OriginalPayload:    "x.y.z",
+	}
+	payload, _ := json.Marshal(job)
+	msg := &domain.Message{
+		MessageID: "jmdn-col-1",
+		Direction: domain.DirectionOutbound,
+		Status:    domain.StatusQueued,
+		Payload:   string(payload),
+		JobType:   constants.JobTypeSendJMDN,
+	}
+
+	err := worker.deliverMessage(context.Background(), msg)
+	assert.NoError(t, err)
+	assert.True(t, hitReceipt, "dispatch must have routed via job_type column to deliverJMDN")
+}
+
+// TestWorker_Dispatch_UnknownJobType asserts that an unrecognised
+// job_type does not fall through to the business-document path. Per
+// ADR-0002 these belong in a dead-letter state, surfaced here as a
+// non-retryable validation error.
+func TestWorker_Dispatch_UnknownJobType(t *testing.T) {
+	msgRepo := &mockMessageRepository{messages: make(map[string]*domain.Message)}
+	partnerRepo := &mockPartnerRepository{partners: make(map[string]*domain.Partner)}
+	worker := NewWorker(msgRepo, partnerRepo, nil)
+
+	msg := &domain.Message{
+		MessageID: "unknown-1",
+		Direction: domain.DirectionOutbound,
+		Status:    domain.StatusQueued,
+		Payload:   `{"anything":"goes"}`,
+		JobType:   "totally_made_up_job_type",
+	}
+
+	err := worker.deliverMessage(context.Background(), msg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown job_type")
+}
+
+// TestWorker_Dispatch_EmptyColumn_FallsBackToPayload asserts that a row
+// with an empty job_type column (e.g. legacy in-memory fixture, or a row
+// that somehow reached the worker before the backfill ran) still routes
+// correctly by reading the JSON payload's job_type as a fallback.
+func TestWorker_Dispatch_EmptyColumn_FallsBackToPayload(t *testing.T) {
+	engine, _ := makeTestEngineAndJWKS(t, "nut-test")
+
+	var hitReceipt bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitReceipt = true
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	msgRepo := &mockMessageRepository{messages: make(map[string]*domain.Message)}
+	partnerRepo := &mockPartnerRepository{
+		partners: map[string]*domain.Partner{
+			"urn:test:sender": {
+				PartnerID:          "urn:test:sender",
+				MDNReceiptEndpoint: server.URL,
+			},
+		},
+	}
+
+	worker := NewWorker(msgRepo, partnerRepo, engine)
+	worker.SetNodeID("urn:test:nut")
+
+	job := queuedJMDNJob{
+		JobType:            "send_jmdn", // payload-only, column intentionally empty
+		OriginalMessageID:  "orig-fallback-001",
+		RecipientPartnerID: "urn:test:sender",
+		Status:             "processed",
+		OriginalPayload:    "x.y.z",
+	}
+	payload, _ := json.Marshal(job)
+	msg := &domain.Message{
+		MessageID: "jmdn-fallback-1",
+		Direction: domain.DirectionOutbound,
+		Status:    domain.StatusQueued,
+		Payload:   string(payload),
+		// JobType column deliberately empty
+	}
+
+	err := worker.deliverMessage(context.Background(), msg)
+	assert.NoError(t, err)
+	assert.True(t, hitReceipt, "fallback path must have routed via payload job_type")
 }

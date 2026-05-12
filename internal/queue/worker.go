@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"fidex-node/internal/constants"
 	"fidex-node/internal/crypto"
 	"fidex-node/internal/domain"
 	"fidex-node/internal/errors"
@@ -197,22 +198,42 @@ type jmdnReceiptBody struct {
 	Signature         string `json:"signature"`
 }
 
-// deliverMessage parses a queued outbound row and dispatches it to the
-// appropriate delivery path. Job-typed rows (currently `send_jmdn`) go
-// through deliverJMDN; everything else is treated as a business-document
-// transmit and delivered via deliverBusinessDocument.
+// deliverMessage dispatches a queued row to the right delivery path based
+// on its `job_type` column.
+//
+// Per ADR-0002 the column is the canonical discriminator; the JSON
+// payload still carries `job_type` redundantly for cross-system
+// portability, but the dispatcher must not depend on it. For rows that
+// somehow reach this method with an empty job_type column (older DBs
+// against which the boot-time backfill has not yet run, or in-memory
+// fixtures from tests that bypass the repository), we fall back to the
+// payload's `job_type` and finally to JobTypeProcessOutbound — the
+// behaviour that predates the column.
 func (w *Worker) deliverMessage(ctx context.Context, msg *domain.Message) error {
-	// Peek at the job_type field — only J-MDN rows carry one. The peek is
-	// non-destructive (separate Unmarshal target) so unknown shapes fall
-	// through to the legacy business-document path.
-	var probe struct {
-		JobType string `json:"job_type"`
+	jobType := msg.JobType
+	if jobType == "" {
+		var probe struct {
+			JobType string `json:"job_type"`
+		}
+		_ = json.Unmarshal([]byte(msg.Payload), &probe)
+		jobType = probe.JobType
+		if jobType == "" {
+			jobType = constants.JobTypeProcessOutbound
+		}
 	}
-	_ = json.Unmarshal([]byte(msg.Payload), &probe)
-	if probe.JobType == "send_jmdn" {
+
+	switch jobType {
+	case constants.JobTypeSendJMDN:
 		return w.deliverJMDN(ctx, msg)
+	case constants.JobTypeProcessOutbound:
+		return w.deliverBusinessDocument(ctx, msg)
+	default:
+		// Unknown job_type: per ADR-0002 these belong in a dead-letter
+		// status rather than silently falling through to the business-
+		// document path. Surface as a validation error so the standard
+		// failure handler (non-retryable) marks the row FAILED.
+		return errors.Validation(fmt.Sprintf("unknown job_type %q", jobType))
 	}
-	return w.deliverBusinessDocument(ctx, msg)
 }
 
 // deliverBusinessDocument is the original outbound delivery path: parse the
