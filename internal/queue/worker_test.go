@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -638,5 +640,117 @@ func TestWorker_HTTPTimeout(t *testing.T) {
 	err := worker.deliverMessage(context.Background(), msg)
 
 	// Should timeout
+	assert.Error(t, err)
+}
+
+// createJMDNJobMessage builds a queued send_jmdn row in the shape the
+// inbound handler now produces for the worker to consume.
+func createJMDNJobMessage(jobID, originalMessageID, recipientPartnerID string) *domain.Message {
+	job := queuedJMDNJob{
+		JobType:            "send_jmdn",
+		OriginalMessageID:  originalMessageID,
+		RecipientPartnerID: recipientPartnerID,
+		Status:             "processed",
+		OriginalPayload:    "eyJhbGciOiJSU0EtT0FFUCIsImVuYyI6IkEyNTZHQ00ifQ.x.y.z.w",
+	}
+	payload, _ := json.Marshal(job)
+	return &domain.Message{
+		MessageID: jobID,
+		Direction: domain.DirectionOutbound,
+		Status:    domain.StatusQueued,
+		Payload:   string(payload),
+	}
+}
+
+func TestWorker_DeliverJMDN_Success(t *testing.T) {
+	engine, _ := makeTestEngineAndJWKS(t, "nut-test")
+
+	// Mock peer endpoint that accepts the receipt and verifies headers.
+	var capturedBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+		assert.Equal(t, "orig-msg-001", r.Header.Get("X-FideX-Receipt-For"))
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	msgRepo := &mockMessageRepository{messages: make(map[string]*domain.Message)}
+	partnerRepo := &mockPartnerRepository{
+		partners: map[string]*domain.Partner{
+			"urn:test:sender": {
+				PartnerID:          "urn:test:sender",
+				Name:               "Original Sender",
+				MessageEndpoint:    server.URL + "/inbound",
+				MDNReceiptEndpoint: server.URL,
+			},
+		},
+	}
+
+	worker := NewWorker(msgRepo, partnerRepo, engine)
+	worker.SetNodeID("urn:test:nut")
+
+	job := createJMDNJobMessage("jmdn-job-1", "orig-msg-001", "urn:test:sender")
+
+	err := worker.deliverMessage(context.Background(), job)
+	assert.NoError(t, err)
+
+	// Body must be a flat J-MDN receipt (NOT a wrapped envelope) so the
+	// reference peer's ProcessReceipt use case accepts it.
+	var receipt jmdnReceiptBody
+	require := assert.New(t)
+	require.NoError(json.Unmarshal(capturedBody, &receipt))
+	assert.Equal(t, "orig-msg-001", receipt.OriginalMessageID)
+	assert.Equal(t, "DELIVERED", receipt.Status)
+	assert.Equal(t, "urn:test:nut", receipt.ReceiverID,
+		"receiver_id must identify the J-MDN signer (the NUT)")
+	assert.True(t, strings.HasPrefix(receipt.HashVerification, "sha256:"),
+		"hash_verification must use the sha256: prefix per spec §7.2")
+	assert.NotEmpty(t, receipt.Signature, "compact JWS signature must be present")
+}
+
+func TestWorker_DeliverJMDN_FallsBackToMessageEndpoint(t *testing.T) {
+	engine, _ := makeTestEngineAndJWKS(t, "nut-test")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	msgRepo := &mockMessageRepository{messages: make(map[string]*domain.Message)}
+	partnerRepo := &mockPartnerRepository{
+		partners: map[string]*domain.Partner{
+			"urn:test:sender": {
+				PartnerID:       "urn:test:sender",
+				MessageEndpoint: server.URL,
+				// No MDNReceiptEndpoint configured — must fall back.
+			},
+		},
+	}
+
+	worker := NewWorker(msgRepo, partnerRepo, engine)
+	worker.SetNodeID("urn:test:nut")
+
+	job := createJMDNJobMessage("jmdn-job-2", "orig-msg-002", "urn:test:sender")
+	err := worker.deliverMessage(context.Background(), job)
+	assert.NoError(t, err)
+}
+
+func TestWorker_DeliverJMDN_NoCryptoEngine(t *testing.T) {
+	msgRepo := &mockMessageRepository{messages: make(map[string]*domain.Message)}
+	partnerRepo := &mockPartnerRepository{
+		partners: map[string]*domain.Partner{
+			"urn:test:sender": {
+				PartnerID:          "urn:test:sender",
+				MDNReceiptEndpoint: "http://example.com/receipt",
+			},
+		},
+	}
+	worker := NewWorker(msgRepo, partnerRepo, nil)
+	worker.SetNodeID("urn:test:nut")
+
+	job := createJMDNJobMessage("jmdn-job-3", "orig-msg-003", "urn:test:sender")
+	err := worker.deliverMessage(context.Background(), job)
 	assert.Error(t, err)
 }

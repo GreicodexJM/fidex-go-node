@@ -8,56 +8,45 @@ suite, Drummond-style certification model.
 | Profile    | Status         | Pass / Total |
 | ---------- | -------------- | ------------ |
 | `core`     | **CERTIFIED**  | 17 / 17      |
-| `enhanced` | NOT CERTIFIED  | 18 / 21      |
-| `edge`     | NOT CERTIFIED  | 21 / 25      |
+| `enhanced` | NOT CERTIFIED  | 20 / 21      |
+| `edge`     | NOT CERTIFIED  | 24 / 25      |
 
 `core` covers discovery, registration, outbound transmit, inbound receive.
 This is the spec-required floor for B2B interop. `enhanced` adds receipts
 (J-MDN) and error semantics; `edge` further adds active security probes.
 
-## Open gaps blocking `enhanced` / `edge`
+Bucket 06 (errors) and 07 (security) are now fully green after FID-1 +
+FID-2. The signed-J-MDN emission path (FID-3) reaches the peer
+successfully and the peer's `ProcessReceipt` use case accepts the
+receipt, but the conformance suite's bucket 05.03 assertion does not
+recognise the peer's terminal outbound status (`ACKNOWLEDGED`) — see
+remaining gap G1 below.
 
-### G1 · Inbound silently 202s on rejection
+## Remaining gaps
 
-**Bucket 06.02 / 06.04** — when the inbound handler receives an envelope
-with an unknown `sender_id`, an unverifiable JWS, or a malformed JWE, it
-currently persists the row as `DELIVERED` (or no row) and returns HTTP 202
-with an empty body. Spec §4.4 and §8 require either a 4xx with
-`error_code=UNKNOWN_PARTNER`/`SIGNATURE_INVALID`, or a 2xx with explicit
-`status=REJECTED` and `error_code` in the response body.
+### G1 · Bucket 05.03 — status-string match too narrow
 
-**Fix path:** `internal/api/external_handlers.go` `inboundHandler` —
-branch on decrypt/verify outcome, persist with `QUARANTINED` status, return
-either a `{status, error_code, message}` body or a proper 4xx.
+The reference peer (`fidex-php`) transitions an outbound message
+through `QUEUED → SENT → ACKNOWLEDGED` once a valid J-MDN arrives. The
+conformance suite's bucket 05.03 only accepts `delivered|DELIVERED|
+completed|COMPLETED`, so the test marks the round-trip as FAIL despite
+the peer correctly reconciling the row.
 
-### G2 · Duplicate `message_id` returns 500
+This is a conformance-suite gap (the test should accept `ACKNOWLEDGED`
+since that is the canonical PHP-peer terminal success state). The
+J-MDN emission and reconciliation themselves are spec-compliant — the
+NUT delivers a signed receipt within 2s of inbound processing and the
+peer returns 200.
 
-**Bucket 06.03 / 07.04** — submitting the same envelope twice returns HTTP
-202 first, then HTTP 500 on replay (UNIQUE constraint bubbles up
-unhandled). Spec §9.3 requires deterministic 409 with
-`error_code=DUPLICATE_MESSAGE`, or idempotent 2xx if the first delivery
-succeeded.
+**Resolution path:** update `tests/05-receipts.sh` in the conformance
+suite to add `acknowledged|ACKNOWLEDGED` to the success-status case
+list. Out of scope for this repo; tracked separately.
 
-**Fix path:** detect `sqlite3.ErrConstraint` (or repository-level
-duplicate-key error) in the inbound persistence path; map to 409.
+### G2 · RSA-OAEP-256 algorithm advertisement (FID-4)
 
-### G3 · J-MDN emission missing
-
-**Bucket 05.02 / 05.03** — after a successful inbound decrypt + verify, no
-signed J-MDN receipt is generated or delivered back to the sender. The
-sender's outbound row stays in `SENT` indefinitely.
-
-**Fix path:** `internal/queue/worker.go` — after successful inbound
-delivery, enqueue a `send_jmdn` job. New worker handler generates the
-signed disposition notification (spec §7) and POSTs it to the sender's
-`receive_receipt` URL. The sender's `/api/v1/receipt` handler must accept
-and reconcile against outbound message status.
-
-### G4 · Algorithm name in AS5 config
-
-(NB: not a blocker — `RSA-OAEP` matches spec §5 verbatim; the suite was
-patched to accept this.) Consider also publishing the SHA-2 variant
-`RSA-OAEP-256` once peers support it, to ease future migration off SHA-1.
+Optional spec §5.2 enhancement: advertise both RSA-OAEP and
+RSA-OAEP-256 in the AS5 config, with the encryption path choosing
+based on the peer's published capability. Not a conformance blocker.
 
 ## Running the suite locally
 

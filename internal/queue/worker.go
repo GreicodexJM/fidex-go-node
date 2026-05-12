@@ -3,10 +3,13 @@ package queue
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"fidex-node/internal/crypto"
@@ -148,10 +151,10 @@ func (w *Worker) processQueue() {
 	}
 }
 
-// queuedOutboundPayload is the JSON shape this worker expects on every
-// outbound row in the messages table. It matches api.TransmitRequest plus
-// the receipt-routing shape used by the inbound handler. The worker is the
-// place where business documents become signed-and-encrypted FideX envelopes.
+// queuedOutboundPayload is the JSON shape this worker expects for regular
+// business-document outbound rows. It matches api.TransmitRequest. The
+// worker is the place where business documents become signed-and-encrypted
+// FideX envelopes.
 type queuedOutboundPayload struct {
 	DestinationPartnerID string          `json:"destination_partner_id"`
 	DocumentType         string          `json:"document_type"`
@@ -159,10 +162,63 @@ type queuedOutboundPayload struct {
 	Payload              json.RawMessage `json:"payload"`
 }
 
-// deliverMessage parses a queued outbound row, builds a signed+encrypted
-// FideX envelope addressed to the destination partner, and POSTs it to the
-// partner's published message endpoint.
+// queuedJMDNJob is the JSON shape an inbound handler writes when it wants
+// the worker to emit a signed J-MDN receipt back to the original sender.
+// Spec §7: receipts are JWS-signed disposition notifications addressed to
+// the sender's receive_receipt endpoint.
+type queuedJMDNJob struct {
+	JobType            string `json:"job_type"`
+	OriginalMessageID  string `json:"original_message_id"`
+	RecipientPartnerID string `json:"recipient_partner_id"`
+	Status             string `json:"status"`
+	OriginalPayload    string `json:"original_payload"`
+}
+
+// jmdnReceiptBody is the JSON wire shape this worker POSTs to a partner's
+// receive_receipt endpoint. The structure matches the receipt schema
+// expected by the reference peer (fidex-php) and the canonical J-MDN
+// definition in spec §7.2:
+//
+//	original_message_id  — the message_id the receipt acknowledges
+//	status               — DELIVERED | FAILED (uppercase, spec §7.3)
+//	receiver_id          — URN of the receipt's signer (us, the NUT)
+//	hash_verification    — "sha256:" + lowercase-hex SHA-256 of the
+//	                       original encrypted_payload (anti-tamper)
+//	timestamp            — RFC3339 with millisecond precision
+//	signature            — compact JWS (alg=RS256) over the same fields,
+//	                       signed by the NUT's private signing key
+type jmdnReceiptBody struct {
+	OriginalMessageID string `json:"original_message_id"`
+	Status            string `json:"status"`
+	ReceiverID        string `json:"receiver_id"`
+	HashVerification  string `json:"hash_verification"`
+	Timestamp         string `json:"timestamp"`
+	ErrorLog          string `json:"error_log,omitempty"`
+	Signature         string `json:"signature"`
+}
+
+// deliverMessage parses a queued outbound row and dispatches it to the
+// appropriate delivery path. Job-typed rows (currently `send_jmdn`) go
+// through deliverJMDN; everything else is treated as a business-document
+// transmit and delivered via deliverBusinessDocument.
 func (w *Worker) deliverMessage(ctx context.Context, msg *domain.Message) error {
+	// Peek at the job_type field — only J-MDN rows carry one. The peek is
+	// non-destructive (separate Unmarshal target) so unknown shapes fall
+	// through to the legacy business-document path.
+	var probe struct {
+		JobType string `json:"job_type"`
+	}
+	_ = json.Unmarshal([]byte(msg.Payload), &probe)
+	if probe.JobType == "send_jmdn" {
+		return w.deliverJMDN(ctx, msg)
+	}
+	return w.deliverBusinessDocument(ctx, msg)
+}
+
+// deliverBusinessDocument is the original outbound delivery path: parse the
+// TransmitRequest-shaped payload, sign+encrypt the business document, POST
+// it as a FideX envelope to the partner's message endpoint.
+func (w *Worker) deliverBusinessDocument(ctx context.Context, msg *domain.Message) error {
 	// 1. Parse the queued payload (TransmitRequest-shaped).
 	var queued queuedOutboundPayload
 	if err := json.Unmarshal([]byte(msg.Payload), &queued); err != nil {
@@ -252,6 +308,126 @@ func (w *Worker) deliverMessage(ctx context.Context, msg *domain.Message) error 
 		msg.MessageID, partner.Name, resp.StatusCode)
 
 	return nil
+}
+
+// deliverJMDN parses a queued send_jmdn job, builds a signed J-MDN
+// disposition notification, and POSTs it to the original sender's
+// receive_receipt endpoint. Spec §7 + interop with the reference peer
+// (fidex-php) require the receipt to ship as a flat JSON object — not
+// wrapped in a FidexEnvelope — with a detached `signature` JWS over the
+// receipt body itself.
+func (w *Worker) deliverJMDN(ctx context.Context, msg *domain.Message) error {
+	var job queuedJMDNJob
+	if err := json.Unmarshal([]byte(msg.Payload), &job); err != nil {
+		return errors.Validation("invalid send_jmdn job payload")
+	}
+	if job.OriginalMessageID == "" {
+		return errors.Validation("send_jmdn job has empty original_message_id")
+	}
+	if job.RecipientPartnerID == "" {
+		return errors.Validation("send_jmdn job has empty recipient_partner_id")
+	}
+	if w.cryptoEngine == nil {
+		return errors.Validation("crypto engine not configured on worker")
+	}
+
+	partner, err := w.partnerRepo.GetByID(ctx, job.RecipientPartnerID)
+	if err != nil {
+		return errors.Wrap(err, errors.ErrCodePartnerNotFound,
+			fmt.Sprintf("partner %s not found for J-MDN delivery", job.RecipientPartnerID))
+	}
+
+	// Receipt destination: prefer mdn_receipt_endpoint (the explicit
+	// receive_receipt URL from the partner's AS5 config). Fall back to the
+	// message endpoint only as a last resort — that's a spec violation by
+	// the partner but at least the receipt lands somewhere observable.
+	receiptURL := partner.MDNReceiptEndpoint
+	if receiptURL == "" {
+		receiptURL = partner.MessageEndpoint
+		if receiptURL == "" {
+			return errors.Validation("partner has no receipt endpoint configured")
+		}
+		logger.Warn(ctx, "Partner %s has no mdn_receipt_endpoint; falling back to message endpoint",
+			job.RecipientPartnerID)
+	}
+
+	// Normalize disposition status. Spec §7.3 uses uppercase tokens —
+	// DELIVERED / FAILED — and the reference peer rejects anything else
+	// silently by leaving the outbound row in SENT. Accept the legacy
+	// lowercase "processed" alias for backwards-compat with older inbound
+	// handlers that may still queue jobs with that string.
+	status := strings.ToUpper(job.Status)
+	switch status {
+	case "DELIVERED", "FAILED":
+		// pass through
+	case "", "PROCESSED":
+		status = "DELIVERED"
+	default:
+		// Anything we don't recognise is funnelled to DELIVERED rather
+		// than blocking the sender's outbound row indefinitely.
+		status = "DELIVERED"
+	}
+
+	receipt := w.buildJMDN(job.OriginalMessageID, status, job.OriginalPayload)
+	receiptBytes, err := json.Marshal(receipt)
+	if err != nil {
+		return errors.InternalWrap(err, "failed to marshal J-MDN receipt")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", receiptURL, bytes.NewReader(receiptBytes))
+	if err != nil {
+		return errors.InternalWrap(err, "failed to create J-MDN HTTP request")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "FideX-Node/1.0")
+	req.Header.Set("X-FideX-Message-ID", msg.MessageID)
+	req.Header.Set("X-FideX-Sender", w.nodeID)
+	req.Header.Set("X-FideX-Receipt-For", job.OriginalMessageID)
+
+	logger.Info(ctx, "Delivering J-MDN for %s to %s at %s",
+		job.OriginalMessageID, partner.Name, receiptURL)
+
+	resp, err := w.httpClient.Do(req)
+	if err != nil {
+		return errors.Network(err, "J-MDN delivery")
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return errors.New(errors.ErrCodeNetwork,
+			fmt.Sprintf("partner returned status %d on J-MDN: %s", resp.StatusCode, string(body)))
+	}
+
+	logger.Info(ctx, "J-MDN for %s delivered to %s (status: %d)",
+		job.OriginalMessageID, partner.Name, resp.StatusCode)
+	return nil
+}
+
+// buildJMDN constructs a signed J-MDN receipt body. The `signature` field
+// is a compact JWS over the receipt's own JSON (sans signature) so the
+// sender can verify integrity without trusting the transport. The hash
+// over the original encrypted_payload provides defence in depth against a
+// MITM swapping the receipt for a different message.
+func (w *Worker) buildJMDN(originalMessageID, status, originalPayload string) jmdnReceiptBody {
+	hash := sha256.Sum256([]byte(originalPayload))
+	receipt := jmdnReceiptBody{
+		OriginalMessageID: originalMessageID,
+		Status:            status,
+		ReceiverID:        w.nodeID,
+		HashVerification:  "sha256:" + hex.EncodeToString(hash[:]),
+		Timestamp:         time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
+	}
+
+	// Sign the JSON shape MINUS the signature field to keep verification
+	// deterministic on the peer side. Errors from CreateJMDN fall through
+	// as an empty signature — the peer will then 4xx the receipt and the
+	// retry loop will pick it up.
+	signingBytes, _ := json.Marshal(receipt)
+	if jws, err := w.cryptoEngine.CreateJMDN(originalMessageID, status, signingBytes, nil); err == nil {
+		receipt.Signature = jws
+	}
+	return receipt
 }
 
 // handleSuccess marks a message as delivered

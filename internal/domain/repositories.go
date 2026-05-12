@@ -2,8 +2,16 @@ package domain
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrDuplicateMessageID is returned by MessageRepository.Create when the
+// underlying store rejects an insert because a row with the same
+// message_id already exists. Spec §9.3 requires callers to translate this
+// into a deterministic 409 Conflict response to preserve idempotent
+// replay semantics — never let it surface as a 500.
+var ErrDuplicateMessageID = errors.New("duplicate message_id")
 
 // MessageStatus represents the status of a message in the system
 type MessageStatus string

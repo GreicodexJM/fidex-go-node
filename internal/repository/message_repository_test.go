@@ -111,7 +111,10 @@ func TestMessageRepository_Create(t *testing.T) {
 
 		err = repo.Create(ctx, msg2)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to insert message")
+		// Spec §9.3 — replay protection. Repository must surface a typed
+		// sentinel error so the API layer can map it to HTTP 409 instead
+		// of letting the raw UNIQUE constraint bubble up as a 500.
+		assert.ErrorIs(t, err, domain.ErrDuplicateMessageID)
 	})
 
 	t.Run("sets CreatedAt if not provided", func(t *testing.T) {
