@@ -22,24 +22,24 @@ jobs:
 
     steps:
       - name: Checkout FideXNode
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: fidexnode
 
       - name: Checkout reference peer
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: GreicodexJM/fidex-php-node
           path: fidex-php
 
       - name: Checkout conformance suite
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: GreicodexJM/fidex-conformance
           path: fidex-conformance
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.24'
           cache-dependency-path: fidexnode/go.sum
@@ -107,7 +107,7 @@ jobs:
 
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: conformance-report-core
           path: |
@@ -123,18 +123,18 @@ jobs:
     needs: conformance-core
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           path: fidexnode
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: GreicodexJM/fidex-php-node
           path: fidex-php
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: GreicodexJM/fidex-conformance
           path: fidex-conformance
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.24'
           cache-dependency-path: fidexnode/go.sum
@@ -188,7 +188,7 @@ jobs:
             --profile edge \
             || echo "::warning::enhanced/edge profile failures advisory pending CONFORMANCE.md gap closure"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: conformance-report-edge
