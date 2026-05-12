@@ -17,14 +17,18 @@ var logger = logging.New("discovery")
 
 // RegistrationRequest represents the payload sent to partner webhook registration endpoint
 type RegistrationRequest struct {
-	NodeID                      string   `json:"node_id"`
-	OrganizationName            string   `json:"organization_name"`
-	JWKSUri                     string   `json:"jwks_uri"`
-	MessageEndpoint             string   `json:"message_endpoint"`
-	MDNReceiptEndpoint          string   `json:"mdn_receipt_endpoint"`
-	AlgorithmsSupported         []string `json:"algorithms_supported"`
-	WebhookRegistrationEndpoint string   `json:"webhook_registration_endpoint"`
-	SecurityToken               string   `json:"security_token"`
+	NodeID              string   `json:"node_id"`
+	OrganizationName    string   `json:"organization_name"`
+	JWKSUri             string   `json:"jwks_uri"`
+	MessageEndpoint     string   `json:"message_endpoint"`
+	MDNReceiptEndpoint  string   `json:"mdn_receipt_endpoint"`
+	AlgorithmsSupported []string `json:"algorithms_supported"`
+	// SupportedEncryptionAlgorithms is the partner-facing capability
+	// advertisement for JWE key wrapping per ADR-0003 / FID-4. Optional;
+	// peers that don't read it fall back to algorithms_supported.
+	SupportedEncryptionAlgorithms []string `json:"supported_encryption_algorithms,omitempty"`
+	WebhookRegistrationEndpoint   string   `json:"webhook_registration_endpoint"`
+	SecurityToken                 string   `json:"security_token"`
 }
 
 // RegistrationResponse represents the response from partner webhook registration endpoint
@@ -76,14 +80,15 @@ func (ds *DiscoveryService) InitiatePartnerHandshake(ctx context.Context, discov
 
 	ownConfig := GenerateAS5Config(ds.nodeConfig)
 	regRequest := RegistrationRequest{
-		NodeID:                      ownConfig.NodeID,
-		OrganizationName:            ownConfig.OrganizationName,
-		JWKSUri:                     ownConfig.Endpoints.JWKS,
-		MessageEndpoint:             ownConfig.Endpoints.ReceiveMessage,
-		MDNReceiptEndpoint:          ownConfig.Endpoints.ReceiveReceipt,
-		AlgorithmsSupported:         []string{ownConfig.Security.SignatureAlgorithm, ownConfig.Security.EncryptionAlgorithm, ownConfig.Security.ContentEncryption},
-		WebhookRegistrationEndpoint: ownConfig.Endpoints.Register,
-		SecurityToken:               token,
+		NodeID:                        ownConfig.NodeID,
+		OrganizationName:              ownConfig.OrganizationName,
+		JWKSUri:                       ownConfig.Endpoints.JWKS,
+		MessageEndpoint:               ownConfig.Endpoints.ReceiveMessage,
+		MDNReceiptEndpoint:            ownConfig.Endpoints.ReceiveReceipt,
+		AlgorithmsSupported:           []string{ownConfig.Security.SignatureAlgorithm, ownConfig.Security.EncryptionAlgorithm, ownConfig.Security.ContentEncryption},
+		SupportedEncryptionAlgorithms: ownConfig.Security.SupportedEncryptionAlgorithms,
+		WebhookRegistrationEndpoint:   ownConfig.Endpoints.Register,
+		SecurityToken:                 token,
 	}
 
 	if err := ds.sendRegistrationRequest(remoteConfig.Endpoints.Register, regRequest); err != nil {
@@ -101,7 +106,12 @@ func (ds *DiscoveryService) InitiatePartnerHandshake(ctx context.Context, discov
 		MessageEndpoint:    remoteConfig.Endpoints.ReceiveMessage,
 		MDNReceiptEndpoint: remoteConfig.Endpoints.ReceiveReceipt,
 		PublicKeyJWKS:      jwksData,
-		LastKeyRefresh:     &now,
+		// ADR-0003 / FID-4: hydrate the partner's advertised encryption
+		// capability from the AS5 config. Honours the back-compat fallback
+		// to the single encryption_algorithm field when the array is
+		// absent. Not persisted (see Partner struct doc).
+		SupportedEncryptionAlgorithms: ResolveSupportedEncryptionAlgorithms(remoteConfig),
+		LastKeyRefresh:                &now,
 	}
 
 	if err := ds.partnerRepo.Create(ctx, partner); err != nil {
@@ -173,7 +183,10 @@ func (ds *DiscoveryService) HandleWebhookRegistration(ctx context.Context, req R
 		MessageEndpoint:    req.MessageEndpoint,
 		MDNReceiptEndpoint: req.MDNReceiptEndpoint,
 		PublicKeyJWKS:      jwksData,
-		LastKeyRefresh:     &now,
+		// ADR-0003 / FID-4: pick the partner's declared encryption capability
+		// from the registration body when present.
+		SupportedEncryptionAlgorithms: req.SupportedEncryptionAlgorithms,
+		LastKeyRefresh:                &now,
 	}
 
 	// Check if partner already exists
