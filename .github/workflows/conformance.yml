@@ -1,0 +1,185 @@
+name: FideX Conformance
+
+# Runs the FideX 1.0 conformance suite against this node on every PR
+# and push to master. A regression in the `core` profile blocks merge.
+# Failures in `enhanced` and `edge` are advisory until the matching gaps
+# are implemented (see CONFORMANCE.md).
+#
+# This workflow uses only static string inputs and built-in path env vars
+# ($GITHUB_WORKSPACE). No untrusted event payload fields are interpolated.
+
+on:
+  pull_request:
+    branches: [master, main]
+  push:
+    branches: [master, main]
+
+jobs:
+  conformance-core:
+    name: core profile
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout FideXNode
+        uses: actions/checkout@v4
+        with:
+          path: fidexnode
+
+      - name: Checkout reference peer
+        uses: actions/checkout@v4
+        with:
+          repository: Greicodex/FideX-php
+          path: fidex-php
+
+      - name: Checkout conformance suite
+        uses: actions/checkout@v4
+        with:
+          repository: Greicodex/FideX-conformance
+          path: fidex-conformance
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: fidexnode/go.sum
+
+      - name: Setup PHP 8.2
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: sqlite3, openssl, curl, mbstring
+          coverage: none
+
+      - name: Build FideXNode
+        working-directory: fidexnode
+        run: go build -o fidex-node ./cmd/fidex-node
+
+      - name: Install peer deps
+        working-directory: fidex-php
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Boot FideXNode
+        working-directory: fidexnode
+        env:
+          FIDEX_NODE_ID: urn:custom:fidexnode-ci
+          FIDEX_ORG_NAME: FideXNode CI
+          FIDEX_PUBLIC_DOMAIN: localhost:18443
+          FIDEX_INTERNAL_PORT: '18444'
+          FIDEX_PUBLIC_PORT: '18443'
+          FIDEX_API_KEY: ci-conformance-key-32-chars-aaaaaaa
+          FIDEX_DB_PATH: /tmp/fidexnode-ci.sqlite
+        run: |
+          rm -f "$FIDEX_DB_PATH"
+          setsid ./fidex-node > /tmp/fidexnode-ci.log 2>&1 < /dev/null &
+          for _ in {1..30}; do
+            curl -fsS http://localhost:18443/health >/dev/null 2>&1 && exit 0
+            sleep 0.5
+          done
+          echo "::error::FideXNode did not become healthy within 15s"
+          tail -50 /tmp/fidexnode-ci.log
+          exit 1
+
+      - name: Run conformance (core)
+        working-directory: fidex-conformance
+        env:
+          PEER_PORT: '18081'
+        run: |
+          export PEER_REPO="$GITHUB_WORKSPACE/fidex-php"
+          ./runner.sh \
+            --node-name "FideXNode (CI)" \
+            --node-as5-url http://localhost:18443/.well-known/as5-configuration \
+            --node-id urn:custom:fidexnode-ci \
+            --node-transmit-url http://localhost:18444/api/v1/transmit \
+            --node-transmit-api-key ci-conformance-key-32-chars-aaaaaaa \
+            --node-discover-url http://localhost:18444/admin/dashboard/partners/discover \
+            --node-discover-api-key ci-conformance-key-32-chars-aaaaaaa \
+            --node-db-path /tmp/fidexnode-ci.sqlite \
+            --profile core
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-report-core
+          path: |
+            fidex-conformance/results/conformance-report.json
+            fidex-conformance/results/badge.svg
+            /tmp/fidexnode-ci.log
+
+  conformance-edge:
+    name: edge profile (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    needs: conformance-core
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: fidexnode
+      - uses: actions/checkout@v4
+        with:
+          repository: Greicodex/FideX-php
+          path: fidex-php
+      - uses: actions/checkout@v4
+        with:
+          repository: Greicodex/FideX-conformance
+          path: fidex-conformance
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: fidexnode/go.sum
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: sqlite3, openssl, curl, mbstring
+
+      - name: Build + boot NUT
+        working-directory: fidexnode
+        env:
+          FIDEX_NODE_ID: urn:custom:fidexnode-ci
+          FIDEX_PUBLIC_DOMAIN: localhost:18443
+          FIDEX_INTERNAL_PORT: '18444'
+          FIDEX_PUBLIC_PORT: '18443'
+          FIDEX_API_KEY: ci-conformance-key-32-chars-aaaaaaa
+          FIDEX_DB_PATH: /tmp/fidexnode-ci.sqlite
+        run: |
+          go build -o fidex-node ./cmd/fidex-node
+          rm -f "$FIDEX_DB_PATH"
+          setsid ./fidex-node > /tmp/fidexnode-ci.log 2>&1 < /dev/null &
+          for _ in {1..30}; do
+            curl -fsS http://localhost:18443/health >/dev/null 2>&1 && exit 0
+            sleep 0.5
+          done
+          exit 1
+
+      - name: Install peer deps
+        working-directory: fidex-php
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Run conformance (edge)
+        working-directory: fidex-conformance
+        env:
+          PEER_PORT: '18081'
+        run: |
+          export PEER_REPO="$GITHUB_WORKSPACE/fidex-php"
+          ./runner.sh \
+            --node-name "FideXNode (CI)" \
+            --node-as5-url http://localhost:18443/.well-known/as5-configuration \
+            --node-id urn:custom:fidexnode-ci \
+            --node-transmit-url http://localhost:18444/api/v1/transmit \
+            --node-transmit-api-key ci-conformance-key-32-chars-aaaaaaa \
+            --node-discover-url http://localhost:18444/admin/dashboard/partners/discover \
+            --node-discover-api-key ci-conformance-key-32-chars-aaaaaaa \
+            --node-db-path /tmp/fidexnode-ci.sqlite \
+            --profile edge \
+            || echo "::warning::enhanced/edge profile failures advisory pending CONFORMANCE.md gap closure"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance-report-edge
+          path: |
+            fidex-conformance/results/conformance-report.json
+            fidex-conformance/results/badge.svg
