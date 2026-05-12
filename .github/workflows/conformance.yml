@@ -48,7 +48,12 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.2'
-          extensions: pdo, pdo_sqlite, openssl, curl, json, mbstring, sqlite3
+          # gmp is REQUIRED so the PHP reference peer's brick/math falls back
+          # to GMP's native bignum instead of NativeCalculator — the pure-PHP
+          # backend takes minutes per 4096-bit RSA-OAEP decrypt, which makes
+          # the peer's queue worker hang inside the conformance suite's
+          # 60s drain budget. bcmath is a viable secondary backend.
+          extensions: pdo, pdo_sqlite, openssl, curl, json, mbstring, sqlite3, gmp, bcmath
           coverage: none
 
       - name: Build FideXNode
@@ -141,7 +146,12 @@ jobs:
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.2'
-          extensions: pdo, pdo_sqlite, openssl, curl, json, mbstring, sqlite3
+          # gmp is REQUIRED so the PHP reference peer's brick/math falls back
+          # to GMP's native bignum instead of NativeCalculator — the pure-PHP
+          # backend takes minutes per 4096-bit RSA-OAEP decrypt, which makes
+          # the peer's queue worker hang inside the conformance suite's
+          # 60s drain budget. bcmath is a viable secondary backend.
+          extensions: pdo, pdo_sqlite, openssl, curl, json, mbstring, sqlite3, gmp, bcmath
 
       - name: Build + boot NUT
         working-directory: fidexnode
