@@ -4,10 +4,25 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"fidex-node/internal/domain"
 )
+
+// isUniqueConstraint reports whether the given SQL error was raised because
+// of a UNIQUE constraint violation. We match on the error text rather than
+// on driver-specific types so the check works for both modernc.org/sqlite
+// (production) and mattn/go-sqlite3 (tests) — both formats include the
+// canonical "UNIQUE constraint failed" string.
+func isUniqueConstraint(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "UNIQUE constraint failed") ||
+		strings.Contains(msg, "constraint failed: UNIQUE")
+}
 
 // SQLiteMessageRepository implements domain.MessageRepository for SQLite
 type SQLiteMessageRepository struct {
@@ -40,7 +55,7 @@ func (r *SQLiteMessageRepository) Create(ctx context.Context, msg *domain.Messag
 
 	// Insert the message
 	result, err := r.db.ExecContext(ctx,
-		`INSERT INTO messages (message_id, direction, status, payload, retry_count, next_retry_at, last_error, created_at) 
+		`INSERT INTO messages (message_id, direction, status, payload, retry_count, next_retry_at, last_error, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		msg.MessageID,
 		msg.Direction,
@@ -52,6 +67,9 @@ func (r *SQLiteMessageRepository) Create(ctx context.Context, msg *domain.Messag
 		msg.CreatedAt,
 	)
 	if err != nil {
+		if isUniqueConstraint(err) {
+			return fmt.Errorf("message_id %q already exists: %w", msg.MessageID, domain.ErrDuplicateMessageID)
+		}
 		return fmt.Errorf("failed to insert message: %w", err)
 	}
 
