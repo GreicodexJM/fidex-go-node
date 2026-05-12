@@ -59,6 +59,14 @@ jobs:
         working-directory: fidex-php
         run: composer install --no-interaction --no-progress --prefer-dist
 
+      - name: Generate peer crypto keys
+        # /health on the PHP peer returns 503 when sign/enc keys are missing,
+        # which makes `curl -fsS` fail the runner's health-poll loop. The
+        # conformance runner also generates them defensively, but doing it
+        # here keeps the failure mode obvious in workflow logs.
+        working-directory: fidex-php
+        run: php bin/generate-keys.php
+
       - name: Boot FideXNode
         working-directory: fidexnode
         env:
@@ -157,6 +165,10 @@ jobs:
       - name: Install peer deps
         working-directory: fidex-php
         run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Generate peer crypto keys
+        working-directory: fidex-php
+        run: php bin/generate-keys.php
 
       - name: Run conformance (edge)
         working-directory: fidex-conformance
