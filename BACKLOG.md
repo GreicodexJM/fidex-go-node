@@ -1,7 +1,7 @@
 # FideXNode Backlog — Conformance Gaps
 
 These items are blocking `enhanced` and `edge` profile certification
-against the [FideX-conformance](https://github.com/Greicodex/FideX-conformance)
+against the [FideX-conformance](https://github.com/GreicodexJM/fidex-conformance) (Jira project [FID](https://greicodex.atlassian.net/jira/software/c/projects/FID/boards/386))
 suite. Each entry is structured for direct import into Jira (or any
 issue tracker) once a `FIDEX` project key is provisioned.
 

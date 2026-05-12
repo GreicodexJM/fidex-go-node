@@ -29,13 +29,13 @@ jobs:
       - name: Checkout reference peer
         uses: actions/checkout@v4
         with:
-          repository: Greicodex/FideX-php
+          repository: GreicodexJM/fidex-php
           path: fidex-php
 
       - name: Checkout conformance suite
         uses: actions/checkout@v4
         with:
-          repository: Greicodex/FideX-conformance
+          repository: GreicodexJM/fidex-conformance
           path: fidex-conformance
 
       - name: Setup Go
@@ -120,11 +120,11 @@ jobs:
           path: fidexnode
       - uses: actions/checkout@v4
         with:
-          repository: Greicodex/FideX-php
+          repository: GreicodexJM/fidex-php
           path: fidex-php
       - uses: actions/checkout@v4
         with:
-          repository: Greicodex/FideX-conformance
+          repository: GreicodexJM/fidex-conformance
           path: fidex-conformance
       - uses: actions/setup-go@v5
         with:

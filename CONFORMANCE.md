@@ -1,6 +1,6 @@
 # FideXNode Conformance Status
 
-Tested by [FideX-conformance](https://github.com/Greicodex/FideX-conformance)
+Tested by [FideX-conformance](https://github.com/GreicodexJM/fidex-conformance)
 suite, Drummond-style certification model.
 
 ## Current verdict
@@ -70,7 +70,7 @@ FIDEX_DB_PATH=/tmp/fidexnode-dev.sqlite \
   ./fidex-node &
 
 # 2. Clone the conformance suite next to this repo
-git clone https://github.com/Greicodex/FideX-conformance.git ../FideX-conformance
+git clone https://github.com/GreicodexJM/fidex-conformance.git ../FideX-conformance
 
 # 3. Run
 cd ../FideX-conformance
