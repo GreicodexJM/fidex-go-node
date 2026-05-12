@@ -13,12 +13,40 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// setupTestDB creates an in-memory SQLite database for testing
+// setupTestDB creates an in-memory SQLite database for testing.
+// The schema mirrors the production messages table including the
+// `job_type` column introduced by ADR-0002 / FID-6.
 func setupTestDB(t *testing.T) *sql.DB {
 	db, err := sql.Open("sqlite3", ":memory:")
 	require.NoError(t, err)
 
 	// Create messages table schema
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			message_id TEXT NOT NULL UNIQUE,
+			direction TEXT NOT NULL,
+			status TEXT NOT NULL,
+			payload TEXT NOT NULL,
+			job_type VARCHAR(64) NOT NULL DEFAULT '',
+			retry_count INTEGER DEFAULT 0,
+			next_retry_at DATETIME,
+			last_error TEXT,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)
+	`)
+	require.NoError(t, err)
+
+	return db
+}
+
+// setupLegacyTestDB creates an in-memory SQLite DB on the pre-ADR-0002
+// schema (no job_type column). Used by the migration test to verify the
+// boot-time backfill brings older DBs forward without data loss.
+func setupLegacyTestDB(t *testing.T) *sql.DB {
+	db, err := sql.Open("sqlite3", ":memory:")
+	require.NoError(t, err)
+
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS messages (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,7 +61,6 @@ func setupTestDB(t *testing.T) *sql.DB {
 		)
 	`)
 	require.NoError(t, err)
-
 	return db
 }
 

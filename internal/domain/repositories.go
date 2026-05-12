@@ -34,15 +34,21 @@ const (
 
 // Message represents a FideX AS5 message
 type Message struct {
-	ID          int64            `json:"id"`
-	MessageID   string           `json:"message_id"`
-	Direction   MessageDirection `json:"direction"`
-	Status      MessageStatus    `json:"status"`
-	Payload     string           `json:"payload"`
-	RetryCount  int              `json:"retry_count"`
-	NextRetryAt *time.Time       `json:"next_retry_at"`
-	LastError   string           `json:"last_error"`
-	CreatedAt   time.Time        `json:"created_at"`
+	ID        int64            `json:"id"`
+	MessageID string           `json:"message_id"`
+	Direction MessageDirection `json:"direction"`
+	Status    MessageStatus    `json:"status"`
+	Payload   string           `json:"payload"`
+	// JobType is the dispatch discriminator used by the queue worker.
+	// See ADR-0002: this is a first-class indexed column on the queue
+	// table; the JSON payload also carries it redundantly for cross-system
+	// portability but the column is the canonical source of truth for
+	// dispatch. Use the constants in `internal/constants/jobtypes.go`.
+	JobType     string     `json:"job_type"`
+	RetryCount  int        `json:"retry_count"`
+	NextRetryAt *time.Time `json:"next_retry_at"`
+	LastError   string     `json:"last_error"`
+	CreatedAt   time.Time  `json:"created_at"`
 }
 
 // Partner represents a trading partner connection profile
@@ -83,7 +89,14 @@ type MessageRepository interface {
 	// GetByID retrieves a message by its message_id
 	GetByID(ctx context.Context, messageID string) (*Message, error)
 
-	// ListByStatus retrieves all messages with the specified status
+	// ListByStatus retrieves all messages with the specified status.
+	//
+	// Note: per ADR-0002 a future per-job-type poll method
+	// (ListByStatusAndJobType) is available on the concrete SQLite
+	// implementation and will be promoted to this interface when the
+	// first dedicated worker pool consumes it. Until then it is exposed
+	// as a method on *SQLiteMessageRepository to keep the interface
+	// stable for existing consumers.
 	ListByStatus(ctx context.Context, status MessageStatus) ([]*Message, error)
 
 	// ListPaginated returns messages ordered by created_at DESC.
