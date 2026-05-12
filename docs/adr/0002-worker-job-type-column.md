@@ -1,9 +1,11 @@
 # ADR-0002: Worker job_type — column vs payload-peek dispatch
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-05-12
+- **Accepted:** 2026-05-12
 - **Deciders:** CTO, Lead Dev Orion (Cristiam)
 - **Related ticket:** FID-5
+- **Implementation ticket:** FID-6
 
 ## Context
 

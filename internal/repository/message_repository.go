@@ -3,10 +3,12 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
+	"fidex-node/internal/constants"
 	"fidex-node/internal/domain"
 )
 
@@ -34,7 +36,18 @@ func NewSQLiteMessageRepository(db *sql.DB) *SQLiteMessageRepository {
 	return &SQLiteMessageRepository{db: db}
 }
 
-// Create inserts a new message into the database
+// Create inserts a new message into the database.
+//
+// Per ADR-0002, `job_type` is the dispatch discriminator and is now a
+// first-class column on the queue table. To preserve compatibility with
+// callers that have not yet been migrated to set msg.JobType explicitly,
+// Create resolves the value with this precedence:
+//  1. msg.JobType (caller-supplied, canonical).
+//  2. The `job_type` field inside the JSON payload (legacy convention).
+//  3. constants.JobTypeProcessOutbound (the default outbound business-
+//     document path that predates the column).
+// The resolved value is then mirrored back onto msg so the caller sees
+// what was actually persisted.
 func (r *SQLiteMessageRepository) Create(ctx context.Context, msg *domain.Message) error {
 	if msg == nil {
 		return fmt.Errorf("message cannot be nil")
@@ -53,14 +66,19 @@ func (r *SQLiteMessageRepository) Create(ctx context.Context, msg *domain.Messag
 		msg.CreatedAt = time.Now()
 	}
 
+	// Resolve job_type. The column is the source of truth for dispatch;
+	// the JSON copy stays for cross-system portability per ADR-0002.
+	msg.JobType = resolveJobType(msg.JobType, msg.Payload)
+
 	// Insert the message
 	result, err := r.db.ExecContext(ctx,
-		`INSERT INTO messages (message_id, direction, status, payload, retry_count, next_retry_at, last_error, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO messages (message_id, direction, status, payload, job_type, retry_count, next_retry_at, last_error, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		msg.MessageID,
 		msg.Direction,
 		msg.Status,
 		msg.Payload,
+		msg.JobType,
 		msg.RetryCount,
 		msg.NextRetryAt,
 		msg.LastError,
@@ -83,6 +101,25 @@ func (r *SQLiteMessageRepository) Create(ctx context.Context, msg *domain.Messag
 	return nil
 }
 
+// resolveJobType applies the ADR-0002 precedence: explicit field beats
+// payload-embedded value, payload-embedded value beats the default.
+// Exported only via Create; kept private to the repo so the precedence
+// rule lives in exactly one place.
+func resolveJobType(explicit, payload string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if payload != "" {
+		var probe struct {
+			JobType string `json:"job_type"`
+		}
+		if err := json.Unmarshal([]byte(payload), &probe); err == nil && probe.JobType != "" {
+			return probe.JobType
+		}
+	}
+	return constants.JobTypeProcessOutbound
+}
+
 // GetByID retrieves a message by its message_id
 func (r *SQLiteMessageRepository) GetByID(ctx context.Context, messageID string) (*domain.Message, error) {
 	if messageID == "" {
@@ -91,10 +128,10 @@ func (r *SQLiteMessageRepository) GetByID(ctx context.Context, messageID string)
 
 	var msg domain.Message
 	err := r.db.QueryRowContext(ctx,
-		`SELECT id, message_id, direction, status, payload, retry_count, next_retry_at, last_error, created_at 
+		`SELECT id, message_id, direction, status, payload, job_type, retry_count, next_retry_at, last_error, created_at
 		 FROM messages WHERE message_id = ?`,
 		messageID,
-	).Scan(&msg.ID, &msg.MessageID, &msg.Direction, &msg.Status, &msg.Payload, &msg.RetryCount, &msg.NextRetryAt, &msg.LastError, &msg.CreatedAt)
+	).Scan(&msg.ID, &msg.MessageID, &msg.Direction, &msg.Status, &msg.Payload, &msg.JobType, &msg.RetryCount, &msg.NextRetryAt, &msg.LastError, &msg.CreatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("message not found: %s", messageID)
@@ -158,7 +195,7 @@ func (r *SQLiteMessageRepository) UpdateRetryInfo(ctx context.Context, messageID
 // ListByStatus retrieves all messages with the specified status
 func (r *SQLiteMessageRepository) ListByStatus(ctx context.Context, status domain.MessageStatus) ([]*domain.Message, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, message_id, direction, status, payload, retry_count, next_retry_at, last_error, created_at 
+		`SELECT id, message_id, direction, status, payload, job_type, retry_count, next_retry_at, last_error, created_at
 		 FROM messages WHERE status = ? ORDER BY created_at ASC`,
 		status,
 	)
@@ -170,7 +207,47 @@ func (r *SQLiteMessageRepository) ListByStatus(ctx context.Context, status domai
 	var messages []*domain.Message
 	for rows.Next() {
 		var msg domain.Message
-		if err := rows.Scan(&msg.ID, &msg.MessageID, &msg.Direction, &msg.Status, &msg.Payload, &msg.RetryCount, &msg.NextRetryAt, &msg.LastError, &msg.CreatedAt); err != nil {
+		if err := rows.Scan(&msg.ID, &msg.MessageID, &msg.Direction, &msg.Status, &msg.Payload, &msg.JobType, &msg.RetryCount, &msg.NextRetryAt, &msg.LastError, &msg.CreatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan message: %w", err)
+		}
+		messages = append(messages, &msg)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating messages: %w", err)
+	}
+
+	return messages, nil
+}
+
+// ListByStatusAndJobType retrieves messages filtered by both status and
+// job_type. Backed by the (status, job_type, created_at) composite index
+// introduced in ADR-0002. Empty jobType is rejected — callers that want
+// status-only filtering should use ListByStatus.
+func (r *SQLiteMessageRepository) ListByStatusAndJobType(
+	ctx context.Context,
+	status domain.MessageStatus,
+	jobType string,
+) ([]*domain.Message, error) {
+	if jobType == "" {
+		return nil, fmt.Errorf("job_type cannot be empty")
+	}
+
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, message_id, direction, status, payload, job_type, retry_count, next_retry_at, last_error, created_at
+		 FROM messages WHERE status = ? AND job_type = ? ORDER BY created_at ASC`,
+		status,
+		jobType,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query messages by status+job_type: %w", err)
+	}
+	defer rows.Close()
+
+	var messages []*domain.Message
+	for rows.Next() {
+		var msg domain.Message
+		if err := rows.Scan(&msg.ID, &msg.MessageID, &msg.Direction, &msg.Status, &msg.Payload, &msg.JobType, &msg.RetryCount, &msg.NextRetryAt, &msg.LastError, &msg.CreatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan message: %w", err)
 		}
 		messages = append(messages, &msg)
@@ -200,7 +277,7 @@ func (r *SQLiteMessageRepository) ListPaginated(
 	}
 
 	args := []interface{}{}
-	listQuery := `SELECT id, message_id, direction, status, payload, retry_count, next_retry_at, last_error, created_at FROM messages`
+	listQuery := `SELECT id, message_id, direction, status, payload, job_type, retry_count, next_retry_at, last_error, created_at FROM messages`
 	countQuery := `SELECT COUNT(*) FROM messages`
 
 	if statusFilter != nil {
@@ -225,7 +302,7 @@ func (r *SQLiteMessageRepository) ListPaginated(
 	messages := []*domain.Message{}
 	for rows.Next() {
 		var msg domain.Message
-		if err := rows.Scan(&msg.ID, &msg.MessageID, &msg.Direction, &msg.Status, &msg.Payload, &msg.RetryCount, &msg.NextRetryAt, &msg.LastError, &msg.CreatedAt); err != nil {
+		if err := rows.Scan(&msg.ID, &msg.MessageID, &msg.Direction, &msg.Status, &msg.Payload, &msg.JobType, &msg.RetryCount, &msg.NextRetryAt, &msg.LastError, &msg.CreatedAt); err != nil {
 			return nil, 0, fmt.Errorf("failed to scan message: %w", err)
 		}
 		messages = append(messages, &msg)
