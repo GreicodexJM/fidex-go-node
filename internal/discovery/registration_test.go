@@ -539,3 +539,36 @@ func TestResponderRejectsMalformedBodies(t *testing.T) {
 		t.Errorf("malformed requests made %d fetch(es)", n)
 	}
 }
+
+func TestInitiatorErrorsDoNotLeakToken(t *testing.T) {
+	env := setupTestDB(t)
+	defer env.cleanup()
+	priv, _, _ := crypto.GenerateKeyPair()
+	engine, _ := crypto.NewAS5Engine(priv, "a")
+	ds := NewDiscoveryService(NodeConfig{NodeID: "a", BaseURL: "https://a.example.com"}, NewTokenStore(), env.partnerRepo, engine)
+
+	const secret = "s3cr3t-invitation-token-value"
+	// Port 1 on loopback refuses: net/http's error quotes the full URL.
+	_, err := ds.InitiatePartnerHandshake(context.Background(), "http://127.0.0.1:1/.well-known/as5-configuration?token="+secret)
+	if err == nil {
+		t.Fatal("expected a fetch error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("error leaks the token: %v", err)
+	}
+
+	responder := newTestPeer(t, "urn:gln:test:node-b")
+	responder.register = func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(NewErrorResponse(CodeInvalidToken, "nope", "", time.Now()))
+	}
+	_, err = ds.InitiatePartnerHandshake(context.Background(), responder.as5URL()+"?token="+secret)
+	var refused *RegistrationRefusedError
+	if !errors.As(err, &refused) || strings.Contains(err.Error(), secret) {
+		t.Fatalf("want a redacted RegistrationRefusedError, got %v", err)
+	}
+
+	if got := RedactDiscoveryURL("https://b.example.com/x?a=1&token=" + secret); strings.Contains(got, secret) || !strings.Contains(got, "token=REDACTED") {
+		t.Fatalf("RedactDiscoveryURL = %q", got)
+	}
+}

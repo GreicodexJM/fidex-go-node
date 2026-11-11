@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"fidex-node/internal/constants"
@@ -161,6 +162,32 @@ func TokenFromDiscoveryURL(discoveryURL string) (string, error) {
 	return u.Query().Get(TokenQueryParam), nil
 }
 
+// RedactDiscoveryURL returns discoveryURL with the value of its ?token=
+// replaced by "REDACTED", for logs. Unparseable input is returned as
+// "<invalid discovery URL>".
+func RedactDiscoveryURL(discoveryURL string) string {
+	u, err := url.Parse(discoveryURL)
+	if err != nil {
+		return "<invalid discovery URL>"
+	}
+	q := u.Query()
+	if q.Has(TokenQueryParam) {
+		q.Set(TokenQueryParam, "REDACTED")
+		u.RawQuery = q.Encode()
+	}
+	return u.String()
+}
+
+// redactedError hides the invitation token in an error's text while keeping
+// the chain for errors.As (e.g. *RegistrationRefusedError).
+type redactedError struct {
+	err   error
+	token string
+}
+
+func (e *redactedError) Error() string { return strings.ReplaceAll(e.err.Error(), e.token, "REDACTED") }
+func (e *redactedError) Unwrap() error { return e.err }
+
 // RegistrationRefusedError is returned by InitiatePartnerHandshake when the
 // responder answers the registration with an ErrorResponse.
 type RegistrationRefusedError struct {
@@ -184,7 +211,20 @@ func (e *RegistrationRefusedError) Error() string {
 //	         responder put in its URL — the initiator never mints one.
 //	Phase 4: on a RegistrationResponse naming the responder's node_id, store
 //	         the responder as a partner.
+//
+// The invitation token is a bearer secret: errors returned from here have it
+// replaced by "REDACTED" (net/http errors quote the full request URL).
 func (ds *DiscoveryService) InitiatePartnerHandshake(ctx context.Context, discoveryURL string) (*domain.Partner, error) {
+	partner, err := ds.initiatePartnerHandshake(ctx, discoveryURL)
+	if err != nil {
+		if token, _ := TokenFromDiscoveryURL(discoveryURL); token != "" {
+			return nil, &redactedError{err: err, token: token}
+		}
+	}
+	return partner, err
+}
+
+func (ds *DiscoveryService) initiatePartnerHandshake(ctx context.Context, discoveryURL string) (*domain.Partner, error) {
 	if ds.signer == nil {
 		return nil, fmt.Errorf("discovery service has no signer: cannot sign a registration request")
 	}

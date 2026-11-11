@@ -245,7 +245,7 @@ func (h *Handlers) discoverPartnerHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	logger.Info(ctx, "Registering with partner from: %s", req.DiscoveryURL)
+	logger.Info(ctx, "Registering with partner from: %s", discovery.RedactDiscoveryURL(req.DiscoveryURL))
 
 	// Spec §6.3 initiator side: fetch the partner's AS5 config + JWKS, send a
 	// signed registration carrying the URL's ?token=, store the partner only
