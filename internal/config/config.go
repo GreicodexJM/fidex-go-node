@@ -17,6 +17,10 @@ type Config struct {
 	NodeID           string `json:"node_id"`
 	OrganizationName string `json:"organization_name"`
 	PublicDomain     string `json:"public_domain"`
+	// PublicBaseURL is the scheme://host[:port] partners use to reach the
+	// public API (FIDEX_PUBLIC_BASE_URL). Empty means
+	// https://<public_domain>:<public_api_port>; see ResolvedPublicBaseURL.
+	PublicBaseURL string `json:"public_base_url,omitempty"`
 
 	// Network Configuration
 	InternalAPIPort int `json:"internal_api_port"`
@@ -146,6 +150,9 @@ func loadFromEnv(cfg *Config) {
 	if v := os.Getenv("FIDEX_PUBLIC_DOMAIN"); v != "" {
 		cfg.PublicDomain = v
 	}
+	if v := os.Getenv("FIDEX_PUBLIC_BASE_URL"); v != "" {
+		cfg.PublicBaseURL = v
+	}
 	if v := os.Getenv("FIDEX_INTERNAL_PORT"); v != "" {
 		if port, err := strconv.Atoi(v); err == nil {
 			cfg.InternalAPIPort = port
@@ -208,6 +215,18 @@ func (c *Config) Save(path string) error {
 	}
 
 	return nil
+}
+
+// ResolvedPublicBaseURL is the base URL partners use to reach this node's
+// public API: PublicBaseURL when set (trailing "/" trimmed), otherwise
+// https://<PublicDomain>:<PublicAPIPort>. The node's AS5 configuration URL —
+// sent as initiator_as5_config_url and encoded in the invitation QR — is
+// built from it.
+func (c *Config) ResolvedPublicBaseURL() string {
+	if c.PublicBaseURL != "" {
+		return strings.TrimRight(c.PublicBaseURL, "/")
+	}
+	return fmt.Sprintf("https://%s:%d", c.PublicDomain, c.PublicAPIPort)
 }
 
 // AllowedIPsString returns the allowed IPs as a JSON string for backward compatibility

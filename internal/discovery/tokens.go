@@ -8,7 +8,12 @@ import (
 	"time"
 )
 
-// TokenStore manages single-use security tokens for partner registration
+// TokenStore manages the single-use security tokens a RESPONDER mints for
+// partner registration (spec §6.2 / §6.4). The responder hands a token out
+// inside its AS5 configuration URL (e.g. via the dashboard QR); the initiator
+// echoes it as security_token in its signed registration request, and the
+// responder spends it with ValidateAndConsume before fetching anything the
+// initiator names.
 type TokenStore struct {
 	tokens map[string]*tokenData
 	mu     sync.RWMutex
@@ -32,15 +37,16 @@ func NewTokenStore() *TokenStore {
 	return store
 }
 
-// GenerateToken creates a new single-use token that expires after the given duration
+// GenerateToken creates a new single-use token that expires after the given
+// duration. 256 bits from crypto/rand (spec §6.4 asks for at least 128),
+// encoded base64url WITHOUT padding so it can sit in a URL query unescaped.
 func (ts *TokenStore) GenerateToken(expiresIn time.Duration) (string, error) {
-	// Generate random token
 	bytes := make([]byte, 32)
 	if _, err := rand.Read(bytes); err != nil {
 		return "", fmt.Errorf("failed to generate random token: %w", err)
 	}
 
-	token := base64.URLEncoding.EncodeToString(bytes)
+	token := base64.RawURLEncoding.EncodeToString(bytes)
 
 	now := time.Now()
 	ts.mu.Lock()
@@ -80,6 +86,20 @@ func (ts *TokenStore) ValidateAndConsume(token string) bool {
 	data.used = true
 
 	return true
+}
+
+// IsOpen reports whether token exists, has not expired and has not been used,
+// WITHOUT consuming it. Used to gate GET of the AS5 configuration when the
+// caller presents a token; only registration spends one.
+func (ts *TokenStore) IsOpen(token string) bool {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+
+	data, exists := ts.tokens[token]
+	if !exists {
+		return false
+	}
+	return !data.used && time.Now().Before(data.expiresAt)
 }
 
 // cleanupExpiredTokens periodically removes expired tokens

@@ -3,6 +3,7 @@ package discovery
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -54,13 +55,23 @@ type AS5SecurityConfig struct {
 
 // NodeConfig holds the node's configuration for discovery.
 // PublicDomain feeds the public_domain field in AS5 config.
+//
+// BaseURL is this node's PUBLIC base URL (scheme://host[:port]) as partners
+// reach it; the node's own AS5 configuration URL is BaseURL +
+// constants.RouteAS5Configuration. SigningKeyID is the kid of the "sig" key
+// in this node's JWKS, put in the header of the registration JWS.
 type NodeConfig struct {
 	NodeID                 string
 	OrganizationName       string
 	BaseURL                string
 	PublicDomain           string
 	SupportedDocumentTypes []string
+	SigningKeyID           string
 }
+
+// maxFetchBytes bounds every document read from a partner (AS5
+// configuration, JWKS, registration response).
+const maxFetchBytes = 1 << 20
 
 // GenerateAS5Config builds this node's spec-conformant discovery document.
 func GenerateAS5Config(config NodeConfig) *AS5Configuration {
@@ -117,7 +128,7 @@ func FetchAS5Config(discoveryURL string) (*AS5Configuration, error) {
 	}
 
 	var config AS5Configuration
-	if err := json.NewDecoder(resp.Body).Decode(&config); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxFetchBytes)).Decode(&config); err != nil {
 		return nil, fmt.Errorf("failed to parse AS5 config: %w", err)
 	}
 
@@ -200,7 +211,7 @@ func FetchAndCachePartnerKeys(jwksURL string) (string, error) {
 	}
 
 	var jwksData interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&jwksData); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxFetchBytes)).Decode(&jwksData); err != nil {
 		return "", fmt.Errorf("invalid JWKS JSON: %w", err)
 	}
 

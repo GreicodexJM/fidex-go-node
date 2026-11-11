@@ -45,6 +45,7 @@ const (
 	RouteDashboardMessages = "/messages"
 	RouteDashboardPartners = "/partners"
 	RouteDiscover          = "/partners/discover"
+	RouteInvitations       = "/invitations"
 
 	// Settings Routes (relative to /admin/settings)
 	RouteConfig      = "/config"

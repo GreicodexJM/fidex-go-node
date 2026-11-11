@@ -2,11 +2,13 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
+	"fidex-node/internal/constants"
 	"fidex-node/internal/dashboard"
 	"fidex-node/internal/discovery"
 	"fidex-node/internal/domain"
@@ -57,8 +59,17 @@ type PartnerDiscoveryResponse struct {
 	Message   string `json:"message,omitempty"`
 }
 
-// qrCodeHandler handles GET /api/dashboard/qr
-// Generates and returns a QR code PNG containing the node's discovery URL
+// InvitationResponse is the body of POST /admin/dashboard/invitations.
+type InvitationResponse struct {
+	DiscoveryURL string    `json:"discovery_url"`
+	ExpiresAt    time.Time `json:"expires_at"`
+}
+
+// qrCodeHandler handles GET /admin/dashboard/qr
+// Mints a single-use registration token and returns a QR code PNG of this
+// node's AS5 configuration URL carrying it as ?token= (spec §6.2). Every call
+// mints a fresh token; the URL is also returned in the X-FideX-Discovery-URL
+// header so the UI can show it as text.
 func (h *Handlers) qrCodeHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	// Get size parameter (optional)
@@ -70,11 +81,17 @@ func (h *Handlers) qrCodeHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Get base URL from request
-	baseURL := getBaseURL(r)
-	discoveryURL := dashboard.GetDiscoveryURL(baseURL)
+	if h.DiscoveryService == nil {
+		http.Error(w, "Discovery service not available", http.StatusServiceUnavailable)
+		return
+	}
+	discoveryURL, _, err := h.DiscoveryService.MintInvitation()
+	if err != nil {
+		logger.Error(ctx, "Failed to mint invitation token: %v", err)
+		http.Error(w, "Failed to mint invitation", http.StatusInternalServerError)
+		return
+	}
 
-	// Generate QR code
 	pngBytes, err := dashboard.GenerateQRCode(discoveryURL, size)
 	if err != nil {
 		logger.Error(ctx, "Failed to generate QR code: %v", err)
@@ -86,10 +103,27 @@ func (h *Handlers) qrCodeHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(pngBytes)))
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("X-FideX-Discovery-URL", discoveryURL)
 	w.WriteHeader(http.StatusOK)
 	w.Write(pngBytes)
 
-	logger.Info(ctx, "QR code generated and served to %s", r.RemoteAddr)
+	logger.Info(ctx, "Invitation QR code generated and served to %s", r.RemoteAddr)
+}
+
+// invitationHandler handles POST /admin/dashboard/invitations
+// Mints a single-use registration token and returns the invitation URL as
+// JSON (the same URL the QR encodes), for sharing by email/chat or scripting.
+func (h *Handlers) invitationHandler(w http.ResponseWriter, r *http.Request) {
+	if h.DiscoveryService == nil {
+		respondWithError(w, http.StatusServiceUnavailable, "Discovery service not available", nil)
+		return
+	}
+	discoveryURL, expiresAt, err := h.DiscoveryService.MintInvitation()
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to mint invitation", err)
+		return
+	}
+	respondWithJSON(w, http.StatusOK, InvitationResponse{DiscoveryURL: discoveryURL, ExpiresAt: expiresAt})
 }
 
 // metricsHandler handles GET /api/dashboard/metrics
@@ -206,49 +240,34 @@ func (h *Handlers) discoverPartnerHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	logger.Info(ctx, "Discovering partner from: %s", req.DiscoveryURL)
+	if h.DiscoveryService == nil {
+		respondWithError(w, http.StatusServiceUnavailable, "Discovery service not available", nil)
+		return
+	}
 
-	// Fetch AS5 configuration
-	as5Config, err := discovery.FetchAS5Config(req.DiscoveryURL)
+	logger.Info(ctx, "Registering with partner from: %s", req.DiscoveryURL)
+
+	// Spec §6.3 initiator side: fetch the partner's AS5 config + JWKS, send a
+	// signed registration carrying the URL's ?token=, store the partner only
+	// once it answers "registered".
+	partner, err := h.DiscoveryService.InitiatePartnerHandshake(ctx, req.DiscoveryURL)
 	if err != nil {
-		logger.Warn(ctx, "Failed to fetch AS5 config: %v", err)
-		respondWithError(w, http.StatusBadRequest, "Failed to fetch partner configuration", err)
+		logger.Warn(ctx, "Partner registration failed: %v", err)
+		var refused *discovery.RegistrationRefusedError
+		if errors.As(err, &refused) {
+			respondWithError(w, http.StatusBadGateway, "Partner refused the registration", err)
+			return
+		}
+		respondWithError(w, http.StatusBadRequest, "Partner registration failed", err)
 		return
 	}
-
-	// Fetch partner's JWKS
-	jwks, err := discovery.FetchAndCachePartnerKeys(as5Config.Endpoints.JWKS)
-	if err != nil {
-		logger.Warn(ctx, "Failed to fetch partner JWKS: %v", err)
-		respondWithError(w, http.StatusBadRequest, "Failed to fetch partner keys", err)
-		return
-	}
-
-	// Save partner to database via repository upsert. The peer's published
-	// endpoint URLs are stored so the queue worker knows where to deliver.
-	now := time.Now()
-	partner := &domain.Partner{
-		PartnerID:          as5Config.NodeID,
-		Name:               as5Config.OrganizationName,
-		JWKSUrl:            as5Config.Endpoints.JWKS,
-		MessageEndpoint:    as5Config.Endpoints.ReceiveMessage,
-		MDNReceiptEndpoint: as5Config.Endpoints.ReceiveReceipt,
-		PublicKeyJWKS:      jwks,
-		LastKeyRefresh:     &now,
-	}
-	if err := h.PartnerRepo.Upsert(ctx, partner); err != nil {
-		logger.Error(ctx, "Failed to save partner: %v", err)
-		respondWithError(w, http.StatusInternalServerError, "Failed to save partner", err)
-		return
-	}
-
-	logger.Info(ctx, "Partner discovered and saved: %s (%s)", as5Config.OrganizationName, as5Config.NodeID)
+	logger.Info(ctx, "Partner registered and saved: %s (%s)", partner.Name, partner.PartnerID)
 
 	response := PartnerDiscoveryResponse{
-		PartnerID: as5Config.NodeID,
-		Name:      as5Config.OrganizationName,
+		PartnerID: partner.PartnerID,
+		Name:      partner.Name,
 		Status:    "connected",
-		Message:   "Partner successfully discovered and added",
+		Message:   "Partner successfully registered and added",
 	}
 
 	respondWithJSON(w, http.StatusOK, response)
@@ -256,8 +275,8 @@ func (h *Handlers) discoverPartnerHandler(w http.ResponseWriter, r *http.Request
 	// Broadcast partner_added event to WebSocket clients
 	if h.WebSocketHub != nil {
 		h.WebSocketHub.Broadcast("partner_added", map[string]interface{}{
-			"partner_id": as5Config.NodeID,
-			"name":       as5Config.OrganizationName,
+			"partner_id": partner.PartnerID,
+			"name":       partner.Name,
 			"status":     "connected",
 		})
 	}
@@ -299,6 +318,7 @@ func (h *Handlers) SetupDashboardRouter() *chi.Mux {
 
 		r.Get("/ws", h.websocketHandler)
 		r.Get("/qr", h.qrCodeHandler)
+		r.Post(constants.RouteInvitations, h.invitationHandler)
 		r.Get("/metrics", h.metricsHandler)
 		r.Get("/messages", h.messagesHandler)
 		r.Get("/partners", h.partnersHandler)

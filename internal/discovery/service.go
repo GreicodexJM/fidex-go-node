@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"time"
 
+	"fidex-node/internal/constants"
 	"fidex-node/internal/domain"
 	"fidex-node/internal/logging"
 )
@@ -15,90 +18,225 @@ import (
 // logger is the package-level structured logger for discovery.
 var logger = logging.New("discovery")
 
-// RegistrationRequest represents the payload sent to partner webhook registration endpoint
-type RegistrationRequest struct {
-	NodeID              string   `json:"node_id"`
-	OrganizationName    string   `json:"organization_name"`
-	JWKSUri             string   `json:"jwks_uri"`
-	MessageEndpoint     string   `json:"message_endpoint"`
-	MDNReceiptEndpoint  string   `json:"mdn_receipt_endpoint"`
-	AlgorithmsSupported []string `json:"algorithms_supported"`
-	// SupportedEncryptionAlgorithms is the partner-facing capability
-	// advertisement for JWE key wrapping per ADR-0003 / FID-4. Optional;
-	// peers that don't read it fall back to algorithms_supported.
-	SupportedEncryptionAlgorithms []string `json:"supported_encryption_algorithms,omitempty"`
-	WebhookRegistrationEndpoint   string   `json:"webhook_registration_endpoint"`
-	SecurityToken                 string   `json:"security_token"`
+// Protocol constants for partner registration (spec §6.2–§6.4).
+const (
+	// FidexVersion is the protocol version this node speaks and puts in the
+	// registration payload.
+	FidexVersion = "1.0"
+
+	// ContentTypeJOSE is the media type of a JWS compact serialization
+	// (RFC 7515 §9.2.1). Spec §6.4: the registration body MUST use it.
+	ContentTypeJOSE = "application/jose"
+
+	// TimestampWindow is the ±skew a responder accepts on the registration
+	// timestamp (spec §6.4).
+	TimestampWindow = 15 * time.Minute
+
+	// InvitationTTL is how long a minted registration token stays open
+	// (annotated spec §6.3 recommends 30 minutes).
+	InvitationTTL = 30 * time.Minute
+
+	// TokenQueryParam is the query parameter that carries the security token
+	// in an AS5 configuration URL (annotated spec §6.3: "?token=").
+	TokenQueryParam = "token"
+
+	// MaxRegistrationBytes bounds the registration body a responder reads.
+	MaxRegistrationBytes = 64 << 10
+
+	// userAgent identifies this node on outbound discovery calls.
+	userAgent = "FideX-Node/1.0"
+)
+
+// RegistrationClaims is the registration payload the initiator signs (spec
+// §6.3 Phase 2; openapi.yaml RegistrationRequest). It travels as the payload
+// of a JWS compact serialization, never as raw JSON.
+type RegistrationClaims struct {
+	FidexVersion          string `json:"fidex_version"`
+	InitiatorNodeID       string `json:"initiator_node_id"`
+	InitiatorAS5ConfigURL string `json:"initiator_as5_config_url"`
+	SecurityToken         string `json:"security_token,omitempty"`
+	Timestamp             string `json:"timestamp"`
+	ContactEmail          string `json:"contact_email,omitempty"`
 }
 
-// RegistrationResponse represents the response from partner webhook registration endpoint
+// RegistrationResponse is the responder's 200 body (openapi.yaml
+// RegistrationResponse).
 type RegistrationResponse struct {
-	Success bool   `json:"success"`
-	Message string `json:"message,omitempty"`
+	Status                string `json:"status"`
+	ResponderNodeID       string `json:"responder_node_id"`
+	ResponderAS5ConfigURL string `json:"responder_as5_config_url,omitempty"`
+	Message               string `json:"message,omitempty"`
+	Timestamp             string `json:"timestamp"`
 }
 
-// DiscoveryService handles partner discovery and registration
+// RegistrationStatusRegistered is the only value of RegistrationResponse.Status.
+const RegistrationStatusRegistered = "registered"
+
+// ErrorResponse is openapi.yaml's ErrorResponse: {"error":{code,message,timestamp}}.
+type ErrorResponse struct {
+	Error ErrorBody `json:"error"`
+}
+
+// ErrorBody is the inner object of ErrorResponse.
+type ErrorBody struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Timestamp string `json:"timestamp"`
+	Field     string `json:"field,omitempty"`
+}
+
+// RegistrationSigner signs the registration payload with this node's private
+// key. *crypto.AS5Engine satisfies it.
+type RegistrationSigner interface {
+	SignCompactJWS(payload []byte, kid string) (string, error)
+}
+
+// DiscoveryService handles partner discovery and registration, both as the
+// initiator (InitiatePartnerHandshake) and as the responder
+// (HandleRegistration, MintInvitation, InvitationOpen).
 type DiscoveryService struct {
 	nodeConfig  NodeConfig
 	tokenStore  *TokenStore
 	partnerRepo domain.PartnerRepository
+	signer      RegistrationSigner
+	httpClient  *http.Client
+	now         func() time.Time
 }
 
-// NewDiscoveryService creates a new discovery service with an injected partner repository
-func NewDiscoveryService(nodeConfig NodeConfig, tokenStore *TokenStore, partnerRepo domain.PartnerRepository) *DiscoveryService {
+// NewDiscoveryService creates a new discovery service. signer may be nil on a
+// node that only ever acts as responder; InitiatePartnerHandshake then fails.
+func NewDiscoveryService(nodeConfig NodeConfig, tokenStore *TokenStore, partnerRepo domain.PartnerRepository, signer RegistrationSigner) *DiscoveryService {
 	return &DiscoveryService{
 		nodeConfig:  nodeConfig,
 		tokenStore:  tokenStore,
 		partnerRepo: partnerRepo,
+		signer:      signer,
+		httpClient:  &http.Client{Timeout: 30 * time.Second},
+		now:         time.Now,
 	}
 }
 
-// InitiatePartnerHandshake performs the complete 4-step discovery process
+// OwnAS5ConfigURL is the absolute URL where partners fetch this node's AS5
+// configuration. It is what this node sends as initiator_as5_config_url and
+// what it encodes (plus a token) in its invitation QR.
+func (ds *DiscoveryService) OwnAS5ConfigURL() string {
+	return ds.nodeConfig.BaseURL + constants.RouteAS5Configuration
+}
+
+// MintInvitation mints a single-use registration token and returns this
+// node's AS5 configuration URL carrying it as ?token=, ready to share by QR
+// (spec §6.2: the URL "MAY include a single-use security token" and "SHOULD
+// be shareable via QR code").
+func (ds *DiscoveryService) MintInvitation() (invitationURL string, expiresAt time.Time, err error) {
+	token, err := ds.tokenStore.GenerateToken(InvitationTTL)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	u, err := url.Parse(ds.OwnAS5ConfigURL())
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("invalid own AS5 configuration URL: %w", err)
+	}
+	q := u.Query()
+	q.Set(TokenQueryParam, token)
+	u.RawQuery = q.Encode()
+	return u.String(), ds.now().Add(InvitationTTL), nil
+}
+
+// InvitationOpen reports whether token is an open (unused, unexpired)
+// registration token, without spending it.
+func (ds *DiscoveryService) InvitationOpen(token string) bool {
+	return ds.tokenStore.IsOpen(token)
+}
+
+// TokenFromDiscoveryURL returns the security token carried in an AS5
+// configuration URL's query (?token=), or "" when the URL carries none.
+func TokenFromDiscoveryURL(discoveryURL string) (string, error) {
+	u, err := url.Parse(discoveryURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid discovery URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" || u.Host == "" {
+		return "", fmt.Errorf("invalid discovery URL: must be an absolute http(s) URL")
+	}
+	return u.Query().Get(TokenQueryParam), nil
+}
+
+// RegistrationRefusedError is returned by InitiatePartnerHandshake when the
+// responder answers the registration with an ErrorResponse.
+type RegistrationRefusedError struct {
+	HTTPStatus int
+	Code       string
+	Message    string
+}
+
+func (e *RegistrationRefusedError) Error() string {
+	return fmt.Sprintf("registration refused by partner: HTTP %d %s: %s", e.HTTPStatus, e.Code, e.Message)
+}
+
+// InitiatePartnerHandshake runs the INITIATOR side of spec §6.3:
+//
+//	Phase 1: fetch the responder's AS5 configuration (the URL as given, token
+//	         included) and its JWKS.
+//	Phase 2: build {fidex_version, initiator_node_id, initiator_as5_config_url,
+//	         security_token, timestamp}, sign it RS256 with this node's key and
+//	         POST the JWS compact serialization as application/jose to the
+//	         responder's register endpoint. security_token is the ?token= the
+//	         responder put in its URL — the initiator never mints one.
+//	Phase 4: on a RegistrationResponse naming the responder's node_id, store
+//	         the responder as a partner.
 func (ds *DiscoveryService) InitiatePartnerHandshake(ctx context.Context, discoveryURL string) (*domain.Partner, error) {
-	// Step 1: Fetch AS5 configuration from remote node
-	logger.Info(ctx, "Step 1: Fetching AS5 configuration from %s", discoveryURL)
+	if ds.signer == nil {
+		return nil, fmt.Errorf("discovery service has no signer: cannot sign a registration request")
+	}
+
+	token, err := TokenFromDiscoveryURL(discoveryURL)
+	if err != nil {
+		return nil, err
+	}
+	if token == "" {
+		logger.Warn(ctx, "Discovery URL carries no ?%s=; registering without security_token (the responder may refuse)", TokenQueryParam)
+	}
+
+	// Phase 1
+	logger.Info(ctx, "Phase 1: fetching responder AS5 configuration")
 	remoteConfig, err := FetchAS5Config(discoveryURL)
 	if err != nil {
-		return nil, fmt.Errorf("step 1 failed - could not fetch AS5 config: %w", err)
+		return nil, fmt.Errorf("phase 1 failed - could not fetch AS5 config: %w", err)
 	}
-	logger.Info(ctx, "Step 1 complete: Retrieved config from %s", remoteConfig.OrganizationName)
-
-	// Step 2: Fetch and cache partner's public keys
-	logger.Info(ctx, "Step 2: Fetching partner JWKS from %s", remoteConfig.Endpoints.JWKS)
 	jwksData, err := FetchAndCachePartnerKeys(remoteConfig.Endpoints.JWKS)
 	if err != nil {
-		return nil, fmt.Errorf("step 2 failed - could not fetch JWKS: %w", err)
+		return nil, fmt.Errorf("phase 1 failed - could not fetch JWKS: %w", err)
 	}
-	logger.Info(ctx, "Step 2 complete: Cached partner's public keys")
+	logger.Info(ctx, "Phase 1 complete: %s (%s)", remoteConfig.OrganizationName, remoteConfig.NodeID)
 
-	// Step 3: Generate security token and send registration request
-	logger.Info(ctx, "Step 3: Registering with partner via %s", remoteConfig.Endpoints.Register)
-	token, err := ds.tokenStore.GenerateToken(30 * time.Minute)
+	// Phase 2
+	claims := RegistrationClaims{
+		FidexVersion:          FidexVersion,
+		InitiatorNodeID:       ds.nodeConfig.NodeID,
+		InitiatorAS5ConfigURL: ds.OwnAS5ConfigURL(),
+		SecurityToken:         token,
+		Timestamp:             ds.now().UTC().Format(time.RFC3339),
+	}
+	payload, err := json.Marshal(claims)
 	if err != nil {
-		return nil, fmt.Errorf("step 3 failed - could not generate token: %w", err)
+		return nil, fmt.Errorf("phase 2 failed - could not marshal registration: %w", err)
+	}
+	jws, err := ds.signer.SignCompactJWS(payload, ds.nodeConfig.SigningKeyID)
+	if err != nil {
+		return nil, fmt.Errorf("phase 2 failed - could not sign registration: %w", err)
+	}
+	logger.Info(ctx, "Phase 2: registering with %s", remoteConfig.Endpoints.Register)
+	regResp, err := ds.sendRegistration(ctx, remoteConfig.Endpoints.Register, jws)
+	if err != nil {
+		return nil, fmt.Errorf("phase 2 failed: %w", err)
+	}
+	if regResp.ResponderNodeID != remoteConfig.NodeID {
+		return nil, fmt.Errorf("phase 2 failed - responder_node_id %q does not match the AS5 configuration's node_id %q",
+			regResp.ResponderNodeID, remoteConfig.NodeID)
 	}
 
-	ownConfig := GenerateAS5Config(ds.nodeConfig)
-	regRequest := RegistrationRequest{
-		NodeID:                        ownConfig.NodeID,
-		OrganizationName:              ownConfig.OrganizationName,
-		JWKSUri:                       ownConfig.Endpoints.JWKS,
-		MessageEndpoint:               ownConfig.Endpoints.ReceiveMessage,
-		MDNReceiptEndpoint:            ownConfig.Endpoints.ReceiveReceipt,
-		AlgorithmsSupported:           []string{ownConfig.Security.SignatureAlgorithm, ownConfig.Security.EncryptionAlgorithm, ownConfig.Security.ContentEncryption},
-		SupportedEncryptionAlgorithms: ownConfig.Security.SupportedEncryptionAlgorithms,
-		WebhookRegistrationEndpoint:   ownConfig.Endpoints.Register,
-		SecurityToken:                 token,
-	}
-
-	if err := ds.sendRegistrationRequest(remoteConfig.Endpoints.Register, regRequest); err != nil {
-		return nil, fmt.Errorf("step 3 failed - registration rejected: %w", err)
-	}
-	logger.Info(ctx, "Step 3 complete: Registration accepted by partner")
-
-	// Step 4: Create partner profile in local database
-	logger.Info(ctx, "Step 4: Creating partner profile in database")
-	now := time.Now()
+	// Phase 4
+	now := ds.now()
 	partner := &domain.Partner{
 		PartnerID:          remoteConfig.NodeID,
 		Name:               remoteConfig.OrganizationName,
@@ -107,104 +245,52 @@ func (ds *DiscoveryService) InitiatePartnerHandshake(ctx context.Context, discov
 		MDNReceiptEndpoint: remoteConfig.Endpoints.ReceiveReceipt,
 		PublicKeyJWKS:      jwksData,
 		// ADR-0003 / FID-4: hydrate the partner's advertised encryption
-		// capability from the AS5 config. Honours the back-compat fallback
-		// to the single encryption_algorithm field when the array is
-		// absent. Not persisted (see Partner struct doc).
+		// capability from the AS5 config (not persisted; see Partner doc).
 		SupportedEncryptionAlgorithms: ResolveSupportedEncryptionAlgorithms(remoteConfig),
 		LastKeyRefresh:                &now,
 	}
-
-	if err := ds.partnerRepo.Create(ctx, partner); err != nil {
-		return nil, fmt.Errorf("step 4 failed - could not create partner: %w", err)
+	if err := ds.partnerRepo.Upsert(ctx, partner); err != nil {
+		return nil, fmt.Errorf("phase 4 failed - could not store partner: %w", err)
 	}
-	logger.Info(ctx, "Step 4 complete: Partner profile created for %s", partner.Name)
-
-	logger.Info(ctx, "✓ Handshake complete with %s", partner.Name)
+	logger.Info(ctx, "✓ Registered with %s (%s)", partner.Name, partner.PartnerID)
 	return partner, nil
 }
 
-// sendRegistrationRequest sends the registration request to partner's webhook endpoint
-func (ds *DiscoveryService) sendRegistrationRequest(webhookURL string, req RegistrationRequest) error {
-	body, err := json.Marshal(req)
+// sendRegistration POSTs the signed registration and decodes the outcome:
+// a RegistrationResponse on 200, a *RegistrationRefusedError otherwise.
+func (ds *DiscoveryService) sendRegistration(ctx context.Context, registerURL, jws string) (*RegistrationResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, registerURL, bytes.NewBufferString(jws))
 	if err != nil {
-		return fmt.Errorf("failed to marshal registration request: %w", err)
+		return nil, fmt.Errorf("could not build registration request: %w", err)
 	}
+	req.Header.Set("Content-Type", ContentTypeJOSE)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", userAgent)
 
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	resp, err := client.Post(webhookURL, "application/json", bytes.NewBuffer(body))
+	resp, err := ds.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to send registration request: %w", err)
+		return nil, fmt.Errorf("could not send registration request: %w", err)
 	}
 	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxFetchBytes))
+	if err != nil {
+		return nil, fmt.Errorf("could not read registration response: %w", err)
+	}
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("registration rejected with status: %d", resp.StatusCode)
-	}
-
-	var regResp RegistrationResponse
-	if err := json.NewDecoder(resp.Body).Decode(&regResp); err != nil {
-		return fmt.Errorf("failed to decode registration response: %w", err)
-	}
-
-	if !regResp.Success {
-		return fmt.Errorf("registration rejected: %s", regResp.Message)
-	}
-
-	return nil
-}
-
-// HandleWebhookRegistration processes incoming registration requests from partners
-func (ds *DiscoveryService) HandleWebhookRegistration(ctx context.Context, req RegistrationRequest) error {
-	// Validate security token
-	if !ds.tokenStore.ValidateAndConsume(req.SecurityToken) {
-		return fmt.Errorf("invalid or expired security token")
-	}
-
-	// Validate required fields
-	if req.NodeID == "" || req.OrganizationName == "" || req.JWKSUri == "" {
-		return fmt.Errorf("missing required fields")
-	}
-
-	// Fetch and cache partner's public keys
-	jwksData, err := FetchAndCachePartnerKeys(req.JWKSUri)
-	if err != nil {
-		return fmt.Errorf("failed to fetch partner JWKS: %w", err)
-	}
-
-	// Create partner profile
-	now := time.Now()
-	partner := &domain.Partner{
-		PartnerID:          req.NodeID,
-		Name:               req.OrganizationName,
-		JWKSUrl:            req.JWKSUri,
-		MessageEndpoint:    req.MessageEndpoint,
-		MDNReceiptEndpoint: req.MDNReceiptEndpoint,
-		PublicKeyJWKS:      jwksData,
-		// ADR-0003 / FID-4: pick the partner's declared encryption capability
-		// from the registration body when present.
-		SupportedEncryptionAlgorithms: req.SupportedEncryptionAlgorithms,
-		LastKeyRefresh:                &now,
-	}
-
-	// Check if partner already exists
-	existingPartner, err := ds.partnerRepo.GetByID(ctx, req.NodeID)
-	if err == nil && existingPartner != nil {
-		// Update existing partner
-		partner.ID = existingPartner.ID
-		if err := ds.partnerRepo.Update(ctx, partner); err != nil {
-			return fmt.Errorf("failed to update partner: %w", err)
+		var er ErrorResponse
+		if json.Unmarshal(body, &er) == nil && er.Error.Code != "" {
+			return nil, &RegistrationRefusedError{HTTPStatus: resp.StatusCode, Code: er.Error.Code, Message: er.Error.Message}
 		}
-		logger.Info(ctx, "Updated existing partner: %s", partner.Name)
-	} else {
-		// Create new partner
-		if err := ds.partnerRepo.Create(ctx, partner); err != nil {
-			return fmt.Errorf("failed to create partner: %w", err)
-		}
-		logger.Info(ctx, "Created new partner: %s", partner.Name)
+		return nil, &RegistrationRefusedError{HTTPStatus: resp.StatusCode, Message: "response is not an ErrorResponse"}
 	}
 
-	return nil
+	var rr RegistrationResponse
+	if err := json.Unmarshal(body, &rr); err != nil {
+		return nil, fmt.Errorf("registration response is not a RegistrationResponse: %w", err)
+	}
+	if rr.Status != RegistrationStatusRegistered {
+		return nil, fmt.Errorf("registration response status %q, want %q", rr.Status, RegistrationStatusRegistered)
+	}
+	return &rr, nil
 }

@@ -1,215 +1,100 @@
-# Discovery Process Implementation and Tests
+# Partner Discovery and Registration
 
-This directory contains the implementation and comprehensive tests for the FideX AS5 partner discovery and registration process.
+This package implements FideX partner discovery and registration as the specification describes it in §6.2–§6.4 (`fidex-protocol-specification.md`) and as `openapi.yaml` (`/api/v1/register`, `RegistrationRequest`, `RegistrationResponse`, `ErrorResponse`) defines it. A node can be the **initiator** (it registers with somebody else's node) or the **responder** (somebody registers with it).
 
-## Overview
+## Model: registration by invitation
 
-The discovery process enables two FideX nodes to establish a secure partnership through a 4-step handshake process:
+1. The **responder** mints a single-use token (`MintInvitation`): 256 bits from `crypto/rand`, unpadded base64url, open for 30 minutes (`InvitationTTL`). It shares its AS5 configuration URL with the token as a query parameter:
+   `https://<public base URL>/.well-known/as5-configuration?token=<token>`
+   The dashboard shows that URL as a QR (`GET /admin/dashboard/qr`, a new token per call; the URL is also in the `X-FideX-Discovery-URL` header) or returns it as JSON (`POST /admin/dashboard/invitations`).
+2. The **initiator** receives the URL (QR, email, chat), reads the token from `?token=` (`TokenFromDiscoveryURL`) and echoes it as `security_token`. The initiator never mints a token.
 
-1. **AS5 Configuration Retrieval** - Fetch partner's AS5 configuration document
-2. **JWKS Retrieval** - Fetch and cache partner's public keys
-3. **Webhook Registration** - Register with partner using security token
-4. **Partner Profile Creation** - Store partner profile and validate connection
+The responder's AS5 configuration is public without `?token=`. With `?token=`, a token that is not open gets `401 INVALID_TOKEN`. Fetching the configuration does **not** spend the token; only a registration does.
 
-## Files
-
-### Core Implementation
-
-- `as5_config.go` - AS5 configuration document generation and retrieval
-- `tokens.go` - Single-use security token management
-- `service.go` - Discovery service orchestrating the handshake process
-
-### Supporting Files
-
-- `discovery_test.go` - Comprehensive test suite covering all scenarios
-- `README.md` - This file
-
-## Discovery Process Flow
+## Handshake (spec §6.3)
 
 ```
 ┌─────────────┐                                    ┌─────────────┐
 │   Node A    │                                    │   Node B    │
 │  (Initiator)│                                    │ (Responder) │
 └──────┬──────┘                                    └──────┬──────┘
-       │                                                  │
-       │ 1. GET /.well-known/as5-configuration            │
+       │ Phase 1                                          │
+       │ GET /.well-known/as5-configuration?token=…       │
+       ├─────────────────────────────────────────────────>│
+       │ GET <endpoints.jwks>                             │
        ├─────────────────────────────────────────────────>│
        │                                                  │
-       │         AS5 Configuration (JSON)                 │
-       │<─────────────────────────────────────────────────┤
-       │                                                  │
-       │ 2. GET /.well-known/jwks.json                    │
+       │ Phase 2                                          │
+       │ POST <endpoints.register>                        │
+       │ Content-Type: application/jose                   │
+       │ JWS RS256 (kid = A's "sig" key) over             │
+       │ {fidex_version, initiator_node_id,               │
+       │  initiator_as5_config_url, security_token,       │
+       │  timestamp}                                      │
        ├─────────────────────────────────────────────────>│
-       │                                                  │
-       │              JWKS (JSON)                         │
+       │                                    Phase 3       │
+       │        1. parse JWS, peek claims (unverified)    │
+       │        2. timestamp within ±15 min               │
+       │        3. SPEND the token                        │
+       │        4. GET initiator_as5_config_url;          │
+       │           node_id must = initiator_node_id       │
+       │        5. GET A's JWKS; verify the JWS           │
+       │        6. store A (409 if already a partner)     │
+       │ 200 {status:"registered", responder_node_id,     │
+       │      responder_as5_config_url, message,          │
+       │      timestamp}                                  │
        │<─────────────────────────────────────────────────┤
-       │                                                  │
-       │ 3. POST /as5/onboarding/webhook                  │
-       │    {node_config + security_token}                │
-       ├─────────────────────────────────────────────────>│
-       │                                                  │
-       │         200 OK {success: true}                   │
-       │<─────────────────────────────────────────────────┤
-       │                                                  │
-       │ 4. Save Partner Profile to Database              │
-       │    (Optional: Send test message)                 │
-       │                                                  │
+       │ Phase 4: A stores B                              │
 ```
 
-## Components
+One handshake leaves both nodes knowing each other. A second, reverse handshake is not needed and would get `409 ALREADY_REGISTERED`.
 
-### AS5 Configuration
+### Why the responder's order matters
 
-The AS5 configuration document contains all endpoints and capabilities:
+`initiator_as5_config_url` is text the initiator wrote. If the responder fetched it before checking the token, `/api/v1/register` would let anybody make the node issue HTTP requests (SSRF). So the token is checked and spent before any outbound request. The timestamp is checked before the token is spent, so a stale or replayed request does not burn an invitation. After the token is spent, every refusal leaves it spent: one token, one attempt.
 
-```json
-{
-  "issuer": "urn:gln:node-id",
-  "organization_name": "Organization Name",
-  "jwks_uri": "https://node.example.com/.well-known/jwks.json",
-  "message_endpoint": "https://node.example.com/api/v1/inbound",
-  "mdn_receipt_endpoint": "https://node.example.com/api/v1/receipt",
-  "algorithms_supported": ["RS256", "RSA-OAEP", "A256GCM"],
-  "webhook_registration_endpoint": "https://node.example.com/as5/onboarding/webhook"
-}
-```
+## Responses
 
-### Security Tokens
+| Situation | HTTP | `error.code` |
+|---|---|---|
+| Registered | 200 | — (`RegistrationResponse`, `status: "registered"`) |
+| Body not `application/jose`, not an RS256 JWS, missing/invalid field, unsupported `fidex_version`, non-RFC 3339 timestamp | 400 | `SIGNATURE_INVALID` (with `field` when it applies) |
+| Timestamp outside ±15 min | 401 | `SIGNATURE_INVALID` (`field: "timestamp"`) |
+| `security_token` missing, unknown, expired or already used | 401 | `INVALID_TOKEN` |
+| Initiator AS5 configuration or JWKS cannot be fetched or is invalid | 400 | `CONFIG_UNREACHABLE` |
+| AS5 configuration `node_id` ≠ `initiator_node_id` | 401 | `SIGNATURE_INVALID` |
+| JWS header `kid` not an RS256 signing key in the initiator's JWKS | 401 | `UNKNOWN_KEY_ID` |
+| Signature does not verify | 401 | `SIGNATURE_INVALID` |
+| Initiator already a partner | 409 | `ALREADY_REGISTERED` |
+| Storage failure | 500 | `INTERNAL_ERROR` |
 
-- Single-use tokens for webhook registration
-- Configurable expiration time (default: 30 minutes)
-- Automatically cleaned up after use or expiration
-- Thread-safe token storage
+Every error body is `ErrorResponse`: `{"error":{"code","message","timestamp","field"?}}`.
 
-### Partner Profile
+## Key selection
 
-Partner profiles stored in the database include:
+The signing `kid` is `crypto.SigningKeyID(nodeID)` (`<node_id>:enc-sig`), the kid of the `"use":"sig"` key this node already publishes in `/.well-known/jwks.json`. The responder accepts keys with `use` absent or `"sig"`, `alg` absent or `"RS256"`, and at least 2048 bits. When the JWS header has a `kid`, only that key qualifies. When it has none, every qualifying key is tried.
 
-- Partner ID (unique identifier)
-- Organization name
-- JWKS URL and cached public keys
-- Message and receipt endpoints
-- Last key refresh timestamp
-- Creation and update timestamps
+## Configuration
 
-## Test Coverage
+`FIDEX_PUBLIC_BASE_URL` is the URL partners use to reach the public API (for example `https://fidex.example.com`). It is used to build `initiator_as5_config_url` and the invitation URL. Default: `https://<FIDEX_PUBLIC_DOMAIN>:<FIDEX_PUBLIC_PORT>`.
 
-The test suite includes 11 comprehensive tests:
+## Files
 
-### Configuration Tests
-- ✅ `TestGenerateAS5Config` - Configuration generation
-- ✅ `TestFetchAS5Config` - Remote configuration retrieval
-- ✅ `TestFetchAS5ConfigInvalidURL` - Error handling for invalid URLs
-- ✅ `TestFetchAS5ConfigInvalidJSON` - Error handling for malformed responses
+- `as5_config.go` — the AS5 configuration document, `FetchAS5Config`, `FetchAndCachePartnerKeys`
+- `tokens.go` — in-memory single-use token store (`GenerateToken`, `IsOpen`, `ValidateAndConsume`)
+- `service.go` — protocol types, `MintInvitation`, the initiator (`InitiatePartnerHandshake`)
+- `registration.go` — the responder (`HandleRegistration`), error codes
+- `registration_test.go` — both halves: token from URL, JWS signing and verification, ±15 min window, token reuse, token checked before any fetch, node_id mismatch, unknown kid, tampering, 409, malformed bodies
+- `../api/registration_e2e_test.go` — two nodes over the real routers
 
-### Token Management Tests
-- ✅ `TestTokenStore` - Token generation and validation
-- ✅ `TestTokenStoreExpiration` - Token expiration handling
-
-### Discovery Process Tests
-- ✅ `TestCompleteDiscoveryHandshake` - Full 4-step handshake process
-- ✅ `TestWebhookRegistrationHandler` - Webhook registration endpoint
-- ✅ `TestWebhookRegistrationInvalidToken` - Invalid token rejection
-
-### Database Tests
-- ✅ `TestPartnerDatabaseOperations` - CRUD operations
-- ✅ `TestPartnerDatabaseConstraints` - Data validation and constraints
-- ✅ `TestDiscoveryWithConnectionValidation` - Connection validation with test message
-
-## Running Tests
+## Running the tests
 
 ```bash
-# Run all discovery tests
-go test -v ./internal/discovery/
-
-# Run with timeout
-go test -v ./internal/discovery/ -timeout 30s
-
-# Run specific test
-go test -v ./internal/discovery/ -run TestCompleteDiscoveryHandshake
-
-# Run with coverage
-go test -v ./internal/discovery/ -cover
+go test ./internal/discovery/ ./internal/api/
 ```
 
-## Test Results
+## Known limits
 
-All tests pass successfully:
-
-```
-PASS: TestGenerateAS5Config (0.00s)
-PASS: TestFetchAS5Config (0.00s)
-PASS: TestFetchAS5ConfigInvalidURL (5.01s)
-PASS: TestFetchAS5ConfigInvalidJSON (0.00s)
-PASS: TestTokenStore (0.00s)
-PASS: TestTokenStoreExpiration (2.01s)
-PASS: TestCompleteDiscoveryHandshake (0.41s)
-PASS: TestWebhookRegistrationHandler (0.24s)
-PASS: TestWebhookRegistrationInvalidToken (0.07s)
-PASS: TestPartnerDatabaseOperations (0.12s)
-PASS: TestPartnerDatabaseConstraints (0.25s)
-PASS: TestDiscoveryWithConnectionValidation (0.27s)
-
-Total: 8.380s
-```
-
-## Usage Example
-
-```go
-// Create token store
-tokenStore := discovery.NewTokenStore()
-
-// Create discovery service
-nodeConfig := discovery.NodeConfig{
-    NodeID:           "urn:gln:my-company:node-123",
-    OrganizationName: "My Company",
-    BaseURL:          "https://node.mycompany.com",
-}
-discoveryService := discovery.NewDiscoveryService(nodeConfig, tokenStore)
-
-// Initiate handshake with remote partner
-partner, err := discoveryService.InitiatePartnerHandshake(
-    "https://partner.example.com/.well-known/as5-configuration",
-)
-if err != nil {
-    log.Fatalf("Discovery failed: %v", err)
-}
-
-log.Printf("Successfully partnered with: %s", partner.Name)
-```
-
-## Security Considerations
-
-1. **Token Security**
-   - Tokens are single-use only
-   - Tokens expire after configured duration
-   - Tokens are securely generated using crypto/rand
-
-2. **HTTPS Required**
-   - All discovery endpoints should use HTTPS in production
-   - Certificate validation is enforced
-
-3. **Input Validation**
-   - All configuration fields are validated
-   - Partner data is sanitized before storage
-   - JWKS format is validated before caching
-
-## Error Handling
-
-The implementation handles various error scenarios:
-
-- Network failures during configuration/JWKS retrieval
-- Invalid or malformed JSON responses
-- Expired or invalid security tokens
-- Missing required configuration fields
-- Database constraint violations
-- Duplicate partner registrations
-
-## Future Enhancements
-
-- QR code generation for easy partner onboarding
-- Automatic key rotation and refresh
-- Partner status monitoring
-- Connection health checks
-- Retry logic for failed handshakes
-- Event logging and audit trail
+- Tokens live in memory: a restart invalidates every open invitation.
+- No SSRF guard beyond the token gate: once a valid token is spent, the responder fetches whatever URL the initiator named (bounded to 1 MiB per document, with the HTTP client's default redirect policy).
+- No `INACTIVE` partner state yet (§6.5), so re-registration requires deleting the partner first.

@@ -512,3 +512,42 @@ func ParsePublicKeyFromJWKSByUse(jwksJSON, use string) (*rsa.PublicKey, error) {
 	}
 	return nil, fmt.Errorf("no RSA public key found in JWKS")
 }
+
+// JWKSKeyIDBase is the prefix this node uses for the kids it publishes in its
+// JWKS (see ExportJWKS, which appends "-sig" / "-enc"). Kept in one place so
+// the JWKS handler and the registration signer can never disagree on the kid.
+func JWKSKeyIDBase(nodeID string) string {
+	return nodeID + ":enc"
+}
+
+// SigningKeyID is the kid of the "use":"sig" key this node publishes, i.e.
+// the kid a peer must look up to verify a JWS this node signed.
+func SigningKeyID(nodeID string) string {
+	return JWKSKeyIDBase(nodeID) + "-sig"
+}
+
+// SignCompactJWS signs payload with the node's private key (RS256) and returns
+// the JWS compact serialization. The protected header carries {"alg":"RS256",
+// "kid":kid}, the shape spec §6.4 Step 5 shows for a registration request, so
+// the receiver can pick the right key out of this node's JWKS.
+func (e *AS5Engine) SignCompactJWS(payload []byte, kid string) (string, error) {
+	signer, err := jose.NewSigner(
+		jose.SigningKey{
+			Algorithm: jose.RS256,
+			Key:       jose.JSONWebKey{Key: e.privateKey, KeyID: kid},
+		},
+		nil,
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to create signer: %w", err)
+	}
+	jws, err := signer.Sign(payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to sign payload: %w", err)
+	}
+	compact, err := jws.CompactSerialize()
+	if err != nil {
+		return "", fmt.Errorf("failed to serialize JWS: %w", err)
+	}
+	return compact, nil
+}

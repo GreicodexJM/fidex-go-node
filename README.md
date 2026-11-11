@@ -98,7 +98,7 @@ FideXNode/
 
 ## 🤝 Discovery Process
 
-The automated partner discovery enables two nodes to establish a secure connection through a 4-step handshake:
+Partner discovery and registration follow spec §6.2–§6.4 (registration by invitation). The **responder** (Node B) mints a single-use token and shares its AS5 configuration URL with the token as `?token=` (dashboard QR, or `POST /admin/dashboard/invitations`). The **initiator** (Node A) uses that URL; one handshake leaves both nodes knowing each other.
 
 ### Process Flow
 
@@ -107,43 +107,41 @@ The automated partner discovery enables two nodes to establish a secure connecti
 │   Node A    │                                    │   Node B    │
 │  (Initiator)│                                    │ (Responder) │
 └──────┬──────┘                                    └──────┬──────┘
+       │   (B mints a token; its URL reaches A by QR)     │
        │                                                  │
-       │ 1. GET /.well-known/as5-configuration           │
+       │ 1. GET /.well-known/as5-configuration?token=…    │
        ├─────────────────────────────────────────────────>│
        │         AS5 Configuration (JSON)                 │
        │<─────────────────────────────────────────────────┤
-       │                                                  │
        │ 2. GET /.well-known/jwks.json                    │
        ├─────────────────────────────────────────────────>│
-       │              JWKS (JSON)                         │
        │<─────────────────────────────────────────────────┤
        │                                                  │
-       │ 3. POST /as5/onboarding/webhook                  │
-       │    {node_config + security_token}                │
+       │ 3. POST /api/v1/register  (application/jose)     │
+       │    JWS RS256 {fidex_version, initiator_node_id,  │
+       │    initiator_as5_config_url, security_token,     │
+       │    timestamp}                                    │
        ├─────────────────────────────────────────────────>│
-       │         200 OK {success: true}                   │
+       │        B: check timestamp ±15 min, SPEND token,  │
+       │        then fetch A's AS5 config + JWKS, require │
+       │        node_id match, verify JWS, store A        │
        │<─────────────────────────────────────────────────┤
+       │  200 {status:"registered", responder_node_id,…}  │
        │                                                  │
-       │ 4. Save Partner & Validate Connection            │
-       │                                                  │
+       │ 4. A stores B                                    │
 ```
 
 ### Features
 
-- ✅ **Step 1**: Retrieve partner's AS5 configuration (endpoints, algorithms, capabilities)
-- ✅ **Step 2**: Fetch and cache partner's public keys (JWKS)
-- ✅ **Step 3**: Register with partner using single-use security token
-- ✅ **Step 4**: Create partner profile and validate connection
+- ✅ The invitation token is minted by the responder (256 bits, `crypto/rand`, single use, 30 min) — the initiator only echoes it
+- ✅ The registration request is a signed JWS (RS256, `kid` of the initiator's `sig` key), never raw JSON
+- ✅ The responder validates and spends the token **before** fetching anything the initiator names
+- ✅ Refusals use the spec `ErrorResponse` (`INVALID_TOKEN`, `SIGNATURE_INVALID`, `UNKNOWN_KEY_ID`, `CONFIG_UNREACHABLE`, `ALREADY_REGISTERED`)
 
 ### Test Coverage
 
-Comprehensive test suite with 11 tests covering all scenarios:
-- Configuration retrieval and validation
-- Token generation, validation, and expiration
-- Complete 4-step handshake simulation
-- Webhook registration (valid and invalid tokens)
-- Partner database CRUD operations
-- Connection validation with test messages
+- `internal/discovery/registration_test.go` — token from URL, JWS signing/verification, ±15 min window, token reuse, token-before-fetch, node_id mismatch, unknown kid, tampering, 409, malformed bodies
+- `internal/api/registration_e2e_test.go` — two nodes over the real routers: invitation → registration → both sides store each other; spent token refused; QR carries an open token
 
 See [internal/discovery/README.md](internal/discovery/README.md) for detailed documentation.
 
@@ -277,20 +275,29 @@ POST /api/v1/inbound
 }
 ```
 
-#### Partner Registration Webhook
+#### Partner Registration (spec §6.3, openapi `registerPartner`)
 ```bash
-POST /as5/onboarding/webhook
+POST /api/v1/register
+Content-Type: application/jose
 
+eyJhbGciOiJSUzI1NiIsImtpZCI6Ii4uLiJ9.eyJmaWRleF92ZXJzaW9uIjoiMS4wIiwi...
+```
+
+The JWS payload is:
+
+```json
 {
-  "node_id": "urn:gln:partner:123",
-  "organization_name": "Partner Company",
-  "jwks_uri": "https://partner.com/.well-known/jwks.json",
-  "message_endpoint": "https://partner.com/api/v1/inbound",
-  "mdn_receipt_endpoint": "https://partner.com/api/v1/receipt",
-  "algorithms_supported": ["RS256", "RSA-OAEP", "A256GCM"],
-  "security_token": "single-use-token"
+  "fidex_version": "1.0",
+  "initiator_node_id": "urn:gln:partner:123",
+  "initiator_as5_config_url": "https://partner.com/.well-known/as5-configuration",
+  "security_token": "<the ?token= from this node's invitation URL>",
+  "timestamp": "2026-11-11T19:00:00Z"
 }
 ```
+
+Answers: `200` `RegistrationResponse` `{"status":"registered","responder_node_id":…,"timestamp":…}`, or an `ErrorResponse` `{"error":{"code","message","timestamp"}}` with `400`, `401`, `409`.
+
+Set `FIDEX_PUBLIC_BASE_URL` (e.g. `https://fidex.example.com`) to the URL partners use to reach the public API; it builds `initiator_as5_config_url` and the invitation URL. Default: `https://<public_domain>:<public_port>`.
 
 ## 🧪 Testing
 
@@ -437,7 +444,9 @@ Access the web dashboard at `http://localhost:8080/dashboard` to monitor:
 - Verify partner's public key is current
 
 **Issue**: Discovery handshake fails
-- Verify security token is valid and not expired
+- Use a fresh invitation URL from the partner (tokens are single-use and expire after 30 minutes)
+- Check both clocks: the registration timestamp must be within ±15 minutes
+- Check `FIDEX_PUBLIC_BASE_URL`: the partner fetches your AS5 config from it
 - Check AS5 configuration endpoint is accessible
 - Confirm JWKS endpoint returns valid keys
 

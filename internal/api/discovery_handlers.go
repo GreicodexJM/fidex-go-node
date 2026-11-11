@@ -2,18 +2,36 @@ package api
 
 import (
 	"encoding/json"
+	"io"
+	"mime"
 	"net/http"
+	"time"
 
 	"fidex-node/internal/discovery"
 )
 
 // as5ConfigHandler handles GET /.well-known/as5-configuration
-// Returns the node's AS5 discovery document
+// Returns the node's AS5 discovery document.
+//
+// Without ?token= the document is public (spec §6.2: plain discovery). With
+// ?token= — the invitation URL this node hands out by QR — the token must be
+// open (minted, unused, unexpired), else 401 INVALID_TOKEN (annotated spec
+// §6.6.1). Serving the document does NOT spend the token; only a
+// registration does (§6.4 "Reject invalid or reused tokens").
 func (h *Handlers) as5ConfigHandler(w http.ResponseWriter, r *http.Request) {
 	if h.Config == nil {
 		logger.Error(r.Context(), "Node config not initialized")
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
+	}
+
+	q := r.URL.Query()
+	if _, presented := q[discovery.TokenQueryParam]; presented {
+		token := q.Get(discovery.TokenQueryParam)
+		if h.DiscoveryService == nil || !h.DiscoveryService.InvitationOpen(token) {
+			respondWithFidexError(w, http.StatusUnauthorized, discovery.CodeInvalidToken, "Security token is invalid or expired", "")
+			return
+		}
 	}
 
 	discConfig := discovery.NodeConfig{
@@ -33,55 +51,45 @@ func (h *Handlers) as5ConfigHandler(w http.ResponseWriter, r *http.Request) {
 	logger.Info(r.Context(), "AS5 configuration requested from %s", r.RemoteAddr)
 }
 
-// webhookRegistrationHandler handles POST /as5/onboarding/webhook
-// Accepts registration requests from partners during discovery handshake
+// webhookRegistrationHandler handles POST /api/v1/register (spec §6.3 Phase 3,
+// openapi.yaml registerPartner). The body is a JWS compact serialization sent
+// as application/jose; the answer is a RegistrationResponse (200) or an
+// ErrorResponse (400 / 401 / 409 / 500).
 func (h *Handlers) webhookRegistrationHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	logger.Info(r.Context(), "Received webhook registration request from %s", r.RemoteAddr)
-
-	var req discovery.RegistrationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		logger.Warn(r.Context(), "Failed to decode registration request: %v", err)
-		respondWithJSONError(w, http.StatusBadRequest, "Invalid JSON in request body")
-		return
-	}
+	ctx := r.Context()
+	logger.Info(ctx, "Received registration request from %s", r.RemoteAddr)
 
 	if h.DiscoveryService == nil {
-		logger.Error(r.Context(), "Discovery service not initialized")
-		respondWithJSONError(w, http.StatusInternalServerError, "Service not available")
+		logger.Error(ctx, "Discovery service not initialized")
+		respondWithFidexError(w, http.StatusInternalServerError, discovery.CodeInternalError, "Service not available", "")
 		return
 	}
 
-	// Process the registration
-	if err := h.DiscoveryService.HandleWebhookRegistration(r.Context(), req); err != nil {
-		logger.Warn(r.Context(), "Failed to process registration: %v", err)
-		respondWithJSONError(w, http.StatusBadRequest, err.Error())
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != discovery.ContentTypeJOSE {
+		respondWithFidexError(w, http.StatusBadRequest, discovery.CodeSignatureInvalid,
+			"Content-Type must be application/jose (a JWS compact serialization)", "")
 		return
 	}
 
-	// Return success
-	response := discovery.RegistrationResponse{
-		Success: true,
-		Message: "Partner registered successfully",
+	body, err := io.ReadAll(io.LimitReader(r.Body, discovery.MaxRegistrationBytes+1))
+	if err != nil {
+		respondWithFidexError(w, http.StatusBadRequest, discovery.CodeSignatureInvalid, "Could not read request body", "")
+		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	resp, rerr := h.DiscoveryService.HandleRegistration(ctx, string(body))
+	if rerr != nil {
+		logger.Warn(ctx, "Registration refused: %v", rerr)
+		respondWithFidexError(w, rerr.HTTPStatus, rerr.Code, rerr.Message, rerr.Field)
+		return
+	}
 
-	logger.Info(r.Context(), "Partner registration successful: %s", req.OrganizationName)
+	respondWithJSON(w, http.StatusOK, resp)
+	logger.Info(ctx, "Partner registration successful: %s", resp.Message)
 }
 
-// respondWithJSONError sends a JSON error response
-func respondWithJSONError(w http.ResponseWriter, code int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": false,
-		"message": message,
-	})
+// respondWithFidexError writes openapi.yaml's ErrorResponse.
+func respondWithFidexError(w http.ResponseWriter, status int, code, message, field string) {
+	respondWithJSON(w, status, discovery.NewErrorResponse(code, message, field, time.Now()))
 }

@@ -72,7 +72,7 @@ echo -e "${YELLOW}========================================${NC}"
 
 # Login to Node A
 echo -e "${YELLOW}Logging into Node A...${NC}"
-curl -s -c cookie_a.txt -X POST http://localhost:8091/api/auth/login \
+curl -s -c cookie_a.txt -X POST http://localhost:8091/admin/auth/login \
     -H "Content-Type: application/json" \
     -d '{"username":"admin","password":"admin123"}' > /dev/null
 
@@ -85,7 +85,7 @@ fi
 
 # Login to Node B
 echo -e "${YELLOW}Logging into Node B...${NC}"
-curl -s -c cookie_b.txt -X POST http://localhost:8092/api/auth/login \
+curl -s -c cookie_b.txt -X POST http://localhost:8092/admin/auth/login \
     -H "Content-Type: application/json" \
     -d '{"username":"admin","password":"admin123"}' > /dev/null
 
@@ -96,39 +96,59 @@ else
     exit 1
 fi
 
-# Node A discovers Node B
+# Spec §6.3: ONE handshake makes both nodes partners. Node B (responder) mints a
+# single-use invitation token; Node A (initiator) registers with a signed JWS
+# carrying it. A second, reverse handshake would be refused with 409
+# ALREADY_REGISTERED, so mutual discovery is verified on both sides instead.
 echo ""
-echo -e "${YELLOW}Node A discovering Node B...${NC}"
-DISCOVERY_A=$(curl -s -b cookie_a.txt -X POST http://localhost:8091/api/dashboard/partners/discover \
+echo -e "${YELLOW}Node B minting an invitation (AS5 URL + single-use token)...${NC}"
+INVITATION_URL=$(curl -s -b cookie_b.txt -X POST http://localhost:8092/admin/dashboard/invitations | jq -r '.discovery_url')
+echo "  $INVITATION_URL"
+if [[ "$INVITATION_URL" != *"?token="* ]]; then
+    echo -e "${RED}✗ Node B did not return an invitation URL with a token${NC}"
+    exit 1
+fi
+
+echo ""
+echo -e "${YELLOW}Node A registering with Node B (signed JWS, application/jose)...${NC}"
+DISCOVERY_A=$(curl -s -b cookie_a.txt -X POST http://localhost:8091/admin/dashboard/partners/discover \
     -H "Content-Type: application/json" \
-    -d '{"discovery_url":"http://node-b:8443/.well-known/as5-configuration"}')
+    -d "{\"discovery_url\":\"$INVITATION_URL\"}")
 
 echo "$DISCOVERY_A" | jq '.' 2>/dev/null || echo "$DISCOVERY_A"
 
-if echo "$DISCOVERY_A" | grep -q "success"; then
-    echo -e "${GREEN}✓ Node A successfully discovered Node B${NC}"
+if echo "$DISCOVERY_A" | grep -q "successfully registered"; then
+    echo -e "${GREEN}✓ Node A registered with Node B${NC}"
 else
-    echo -e "${RED}✗ Node A failed to discover Node B${NC}"
+    echo -e "${RED}✗ Node A failed to register with Node B${NC}"
+    exit 1
 fi
 
-# Node B discovers Node A
 echo ""
-echo -e "${YELLOW}Node B discovering Node A...${NC}"
-DISCOVERY_B=$(curl -s -b cookie_b.txt -X POST http://localhost:8092/api/dashboard/partners/discover \
-    -H "Content-Type: application/json" \
-    -d '{"discovery_url":"http://node-a:8443/.well-known/as5-configuration"}')
-
-echo "$DISCOVERY_B" | jq '.' 2>/dev/null || echo "$DISCOVERY_B"
-
-if echo "$DISCOVERY_B" | grep -q "success"; then
-    echo -e "${GREEN}✓ Node B successfully discovered Node A${NC}"
+echo -e "${YELLOW}Verifying mutual recognition...${NC}"
+if curl -s -b cookie_a.txt http://localhost:8091/admin/dashboard/partners | jq -e '.partners[] | select(.partner_id=="node-b")' > /dev/null; then
+    echo -e "${GREEN}✓ Node A lists Node B as partner${NC}"
 else
-    echo -e "${RED}✗ Node B failed to discover Node A${NC}"
+    echo -e "${RED}✗ Node A does not list Node B${NC}"; exit 1
+fi
+if curl -s -b cookie_b.txt http://localhost:8092/admin/dashboard/partners | jq -e '.partners[] | select(.partner_id=="node-a")' > /dev/null; then
+    echo -e "${GREEN}✓ Node B lists Node A as partner${NC}"
+else
+    echo -e "${RED}✗ Node B does not list Node A${NC}"; exit 1
+fi
+
+echo ""
+echo -e "${YELLOW}Re-using the spent invitation (must be refused)...${NC}"
+REUSE_CODE=$(curl -s -o /dev/null -w '%{http_code}' "${INVITATION_URL/node-b:8443/localhost:8445}")
+if [ "$REUSE_CODE" == "401" ]; then
+    echo -e "${GREEN}✓ Spent token refused (HTTP 401 INVALID_TOKEN)${NC}"
+else
+    echo -e "${RED}✗ Spent token answered HTTP $REUSE_CODE (expected 401)${NC}"
 fi
 
 # Get Node B's Partner ID
 echo ""
-NODE_B_ID=$(curl -s http://localhost:8445/.well-known/as5-configuration | jq -r .issuer)
+NODE_B_ID=$(curl -s http://localhost:8445/.well-known/as5-configuration | jq -r .node_id)
 echo -e "${GREEN}Node B ID: $NODE_B_ID${NC}"
 
 echo ""
@@ -136,18 +156,8 @@ echo -e "${YELLOW}========================================${NC}"
 echo -e "${YELLOW}Message Transmission Test${NC}"
 echo -e "${YELLOW}========================================${NC}"
 
-# Get API Key for Node A
-CONTAINER_A=$(docker-compose -f docker-compose.test.yml ps -q node-a)
-echo -e "${YELLOW}Fetching Node A API Key...${NC}"
-NODE_A_API_KEY=$(docker exec $CONTAINER_A sqlite3 fidex_local.db "SELECT internal_api_key FROM config LIMIT 1;" 2>/dev/null || echo "")
-
-if [ -z "$NODE_A_API_KEY" ]; then
-    echo -e "${YELLOW}API key not in DB, using environment variable...${NC}"
-    # Config is now externalized, we need to generate or use a known key
-    # For testing, let's just use the one from the config
-    NODE_A_API_KEY="test-api-key-12345"
-fi
-
+# Node A's internal API key is fixed by FIDEX_API_KEY in docker-compose.test.yml
+NODE_A_API_KEY="test-api-key-12345"
 echo -e "${GREEN}Node A API Key: $NODE_A_API_KEY${NC}"
 
 # Send Message from Node A to Node B
@@ -191,7 +201,7 @@ echo -e "${YELLOW}========================================${NC}"
 
 # Check Node B's inbox
 echo -e "${YELLOW}Checking Node B's inbox...${NC}"
-MESSAGES_B=$(curl -s -b cookie_b.txt "http://localhost:8092/api/dashboard/messages?limit=10")
+MESSAGES_B=$(curl -s -b cookie_b.txt "http://localhost:8092/admin/dashboard/messages?limit=10")
 
 if echo "$MESSAGES_B" | grep -q "$MESSAGE_ID"; then
     echo -e "${GREEN}✓ SUCCESS: Message received by Node B${NC}"
@@ -207,7 +217,7 @@ echo ""
 echo -e "${YELLOW}Checking Node A for receipt (MDN)...${NC}"
 sleep 5
 
-MESSAGE_STATUS=$(curl -s -b cookie_a.txt "http://localhost:8091/api/dashboard/messages?limit=10" | jq -r ".messages[] | select(.message_id==\"$MESSAGE_ID\") | .status" 2>/dev/null)
+MESSAGE_STATUS=$(curl -s -b cookie_a.txt "http://localhost:8091/admin/dashboard/messages?limit=10" | jq -r ".messages[] | select(.message_id==\"$MESSAGE_ID\") | .status" 2>/dev/null)
 
 if [ "$MESSAGE_STATUS" == "DELIVERED" ]; then
     echo -e "${GREEN}✓ SUCCESS: Receipt (MDN) received and processed by Node A${NC}"
@@ -224,7 +234,7 @@ echo -e "${GREEN}Test Summary${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}✓ Nodes started successfully${NC}"
 echo -e "${GREEN}✓ Configuration loaded from environment${NC}"
-echo -e "${GREEN}✓ Mutual discovery completed${NC}"
+echo -e "${GREEN}✓ Registration by invitation completed (both nodes know each other)${NC}"
 echo -e "${GREEN}✓ Message transmitted${NC}"
 echo -e "${GREEN}✓ Message delivered to Node B${NC}"
 

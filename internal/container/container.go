@@ -137,19 +137,24 @@ func (c *Container) initDiscoveryService() error {
 	// Create token store for security tokens
 	c.TokenStore = discovery.NewTokenStore()
 
-	// Create node configuration for discovery
-	// Build the base URL from the public domain and port
-	baseURL := fmt.Sprintf("https://%s:%d", c.Config.PublicDomain, c.Config.PublicAPIPort)
+	// Create node configuration for discovery. BaseURL is the PUBLIC base
+	// URL partners reach; the registration JWS is signed with the key
+	// published as SigningKeyID in this node's JWKS.
 	nodeConfig := discovery.NodeConfig{
 		NodeID:                 c.Config.NodeID,
 		OrganizationName:       c.Config.OrganizationName,
-		BaseURL:                baseURL,
+		BaseURL:                c.Config.ResolvedPublicBaseURL(),
 		PublicDomain:           c.Config.PublicDomain,
 		SupportedDocumentTypes: []string{},
+		SigningKeyID:           crypto.SigningKeyID(c.Config.NodeID),
 	}
 
-	// Create discovery service
-	c.DiscoveryService = discovery.NewDiscoveryService(nodeConfig, c.TokenStore, c.PartnerRepo)
+	// Create discovery service (CryptoService is initialised before it).
+	var signer discovery.RegistrationSigner
+	if c.CryptoService != nil {
+		signer = c.CryptoService
+	}
+	c.DiscoveryService = discovery.NewDiscoveryService(nodeConfig, c.TokenStore, c.PartnerRepo, signer)
 
 	logger.Info(context.Background(), "✓ Discovery service initialized")
 	return nil

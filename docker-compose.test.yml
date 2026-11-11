@@ -10,6 +10,9 @@ services:
       - FIDEX_NODE_ID=node-a
       - FIDEX_ORG_NAME=Node A Corp
       - FIDEX_PUBLIC_DOMAIN=node-a
+      # Public URL the other node uses to reach this one (initiator_as5_config_url, invitation QR).
+      - FIDEX_PUBLIC_BASE_URL=http://node-a:8443
+      - FIDEX_API_KEY=test-api-key-12345
       - FIDEX_INTERNAL_PORT=8091
       - FIDEX_PUBLIC_PORT=8443
       - FIDEX_ALLOWED_IPS=127.0.0.1,::1,172.16.0.0/12,192.168.0.0/16,10.0.0.0/8
@@ -31,6 +34,8 @@ services:
       - FIDEX_NODE_ID=node-b
       - FIDEX_ORG_NAME=Node B Inc
       - FIDEX_PUBLIC_DOMAIN=node-b
+      # Public URL the other node uses to reach this one (initiator_as5_config_url, invitation QR).
+      - FIDEX_PUBLIC_BASE_URL=http://node-b:8443
       - FIDEX_INTERNAL_PORT=8092
       - FIDEX_PUBLIC_PORT=8443
       - FIDEX_ALLOWED_IPS=127.0.0.1,::1,172.16.0.0/12,192.168.0.0/16,10.0.0.0/8

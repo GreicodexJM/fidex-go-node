@@ -446,3 +446,14 @@ func BenchmarkSave(b *testing.B) {
 		cfg.Save(configPath)
 	}
 }
+
+func TestResolvedPublicBaseURL(t *testing.T) {
+	c := &Config{PublicDomain: "fidex.example.com", PublicAPIPort: 8443}
+	if got := c.ResolvedPublicBaseURL(); got != "https://fidex.example.com:8443" {
+		t.Errorf("default = %q", got)
+	}
+	c.PublicBaseURL = "http://node-a:8443/"
+	if got := c.ResolvedPublicBaseURL(); got != "http://node-a:8443" {
+		t.Errorf("override = %q", got)
+	}
+}

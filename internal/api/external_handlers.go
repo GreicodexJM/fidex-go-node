@@ -455,7 +455,7 @@ func (h *Handlers) jwksHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jwksJSON, err := h.CryptoService.ExportJWKS(h.Config.NodeID + ":enc")
+	jwksJSON, err := h.CryptoService.ExportJWKS(crypto.JWKSKeyIDBase(h.Config.NodeID))
 	if err != nil {
 		logger.Error(r.Context(), "Failed to export JWKS: %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
