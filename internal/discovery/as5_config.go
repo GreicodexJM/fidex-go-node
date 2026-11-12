@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
+	"net/url"
 
 	"fidex-node/internal/constants"
 	"fidex-node/internal/crypto"
@@ -67,6 +67,10 @@ type NodeConfig struct {
 	PublicDomain           string
 	SupportedDocumentTypes []string
 	SigningKeyID           string
+	// AllowPrivateNetworks lets partner URLs resolve to loopback, private
+	// and link-local addresses (FIDEX_ALLOW_PRIVATE_PEERS). Off in
+	// production: see internal/netguard.
+	AllowPrivateNetworks bool
 }
 
 // maxFetchBytes bounds every document read from a partner (AS5
@@ -112,11 +116,8 @@ func GenerateAS5Config(config NodeConfig) *AS5Configuration {
 }
 
 // FetchAS5Config fetches and validates an AS5 configuration from a remote URL.
-func FetchAS5Config(discoveryURL string) (*AS5Configuration, error) {
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
-
+// client should come from netguard.NewClient: the URL is partner-chosen.
+func FetchAS5Config(client *http.Client, discoveryURL string) (*AS5Configuration, error) {
 	resp, err := client.Get(discoveryURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch AS5 config: %w", err)
@@ -150,19 +151,27 @@ func validateAS5Config(config *AS5Configuration) error {
 	if len(config.SupportedVersions) == 0 {
 		return fmt.Errorf("supported_versions is required and must be non-empty")
 	}
-	if config.Endpoints.JWKS == "" {
-		return fmt.Errorf("endpoints.jwks is required")
-	}
-	if config.Endpoints.ReceiveMessage == "" {
-		return fmt.Errorf("endpoints.receive_message is required")
-	}
-	if config.Endpoints.ReceiveReceipt == "" {
-		return fmt.Errorf("endpoints.receive_receipt is required")
-	}
-	if config.Endpoints.Register == "" {
-		return fmt.Errorf("endpoints.register is required")
+	for name, v := range map[string]string{
+		"endpoints.jwks":            config.Endpoints.JWKS,
+		"endpoints.receive_message": config.Endpoints.ReceiveMessage,
+		"endpoints.receive_receipt": config.Endpoints.ReceiveReceipt,
+		"endpoints.register":        config.Endpoints.Register,
+	} {
+		if v == "" {
+			return fmt.Errorf("%s is required", name)
+		}
+		if !isAbsoluteHTTPURL(v) {
+			return fmt.Errorf("%s must be an absolute http(s) URL", name)
+		}
 	}
 	return nil
+}
+
+// isAbsoluteHTTPURL reports whether s is an http or https URL with a host
+// and no userinfo.
+func isAbsoluteHTTPURL(s string) bool {
+	u, err := url.Parse(s)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" && u.User == nil
 }
 
 // ResolveSupportedEncryptionAlgorithms returns the list of encryption
@@ -194,12 +203,9 @@ func ResolveSupportedEncryptionAlgorithms(cfg *AS5Configuration) []string {
 	return nil
 }
 
-// FetchAndCachePartnerKeys fetches a partner's JWKS and returns it as a string
-func FetchAndCachePartnerKeys(jwksURL string) (string, error) {
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
-
+// FetchAndCachePartnerKeys fetches a partner's JWKS and returns it as a string.
+// client should come from netguard.NewClient: the URL is partner-chosen.
+func FetchAndCachePartnerKeys(client *http.Client, jwksURL string) (string, error) {
 	resp, err := client.Get(jwksURL)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch JWKS: %w", err)

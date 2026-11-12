@@ -1,9 +1,17 @@
 // Utility Functions for FideX Node Dashboard
 
+// A 401 from the dashboard API means the session is missing or expired.
+function redirectIfUnauthorized(response) {
+    if (response.status === 401) {
+        window.location.href = (window.ROUTES && window.ROUTES.pages && window.ROUTES.pages.login) || '/login';
+    }
+}
+
 // API Helper
 const api = {
     async get(url) {
         const response = await fetch(url);
+        redirectIfUnauthorized(response);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return response.json();
     },
@@ -14,6 +22,7 @@ const api = {
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(data)
         });
+        redirectIfUnauthorized(response);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return response.json();
     },
@@ -24,12 +33,14 @@ const api = {
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(data)
         });
+        redirectIfUnauthorized(response);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return response.json();
     },
     
     async delete(url) {
         const response = await fetch(url, {method: 'DELETE'});
+        redirectIfUnauthorized(response);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return response.json();
     }

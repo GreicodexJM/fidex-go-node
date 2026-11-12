@@ -14,6 +14,7 @@ import (
 	"fidex-node/internal/constants"
 	"fidex-node/internal/domain"
 	"fidex-node/internal/logging"
+	"fidex-node/internal/netguard"
 )
 
 // logger is the package-level structured logger for discovery.
@@ -112,7 +113,7 @@ func NewDiscoveryService(nodeConfig NodeConfig, tokenStore *TokenStore, partnerR
 		tokenStore:  tokenStore,
 		partnerRepo: partnerRepo,
 		signer:      signer,
-		httpClient:  &http.Client{Timeout: 30 * time.Second},
+		httpClient:  netguard.NewClient(30*time.Second, nodeConfig.AllowPrivateNetworks),
 		now:         time.Now,
 	}
 }
@@ -239,11 +240,11 @@ func (ds *DiscoveryService) initiatePartnerHandshake(ctx context.Context, discov
 
 	// Phase 1
 	logger.Info(ctx, "Phase 1: fetching responder AS5 configuration")
-	remoteConfig, err := FetchAS5Config(discoveryURL)
+	remoteConfig, err := FetchAS5Config(ds.httpClient, discoveryURL)
 	if err != nil {
 		return nil, fmt.Errorf("phase 1 failed - could not fetch AS5 config: %w", err)
 	}
-	jwksData, err := FetchAndCachePartnerKeys(remoteConfig.Endpoints.JWKS)
+	jwksData, err := FetchAndCachePartnerKeys(ds.httpClient, remoteConfig.Endpoints.JWKS)
 	if err != nil {
 		return nil, fmt.Errorf("phase 1 failed - could not fetch JWKS: %w", err)
 	}

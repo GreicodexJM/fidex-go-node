@@ -19,7 +19,8 @@ func (h *Handlers) SetupInternalRouter(allowedIPs []string, apiKey string, enabl
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+	// No middleware.RealIP here: it would rewrite RemoteAddr from the
+	// client-controlled X-Forwarded-For before the IP allowlist reads it.
 	r.Use(middleware.Timeout(60 * time.Second))
 
 	// Apply IP allowlist globally
@@ -36,7 +37,7 @@ func (h *Handlers) SetupInternalRouter(allowedIPs []string, apiKey string, enabl
 	// WebUI - HTML Pages (no auth required on these routes, handled by pages)
 	// ========================================
 	r.Get(constants.RouteLogin, serveLoginHandler)
-	r.Get(constants.RouteDashboard, serveDashboardHandler)
+	r.With(h.RequireSessionPage).Get(constants.RouteDashboard, serveDashboardHandler)
 
 	// Static assets (JS, CSS, components)
 	r.Get(constants.RouteJS, serveStaticAssets)
@@ -71,7 +72,9 @@ func (h *Handlers) SetupInternalRouter(allowedIPs []string, apiKey string, enabl
 func (h *Handlers) SetupPublicRouter() *chi.Mux {
 	r := chi.NewRouter()
 
-	// Common middleware
+	// Common middleware. The ?token= of an invitation URL is redacted
+	// before the access logger sees the request.
+	r.Use(RedactTokenInRequestURI)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)

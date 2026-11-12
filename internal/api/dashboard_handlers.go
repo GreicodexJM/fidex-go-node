@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -22,10 +23,20 @@ import (
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		// Allow all origins for now (restrict in production)
+	// Same-origin only: a cross-site page must not open an authenticated
+	// dashboard socket with the user's cookie.
+	CheckOrigin: sameOrigin,
+}
+
+// sameOrigin accepts a WebSocket upgrade only when Origin is absent (a
+// non-browser client) or names the host the request was sent to.
+func sameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
 		return true
-	},
+	}
+	u, err := url.Parse(origin)
+	return err == nil && u.Host == r.Host
 }
 
 // DashboardMetrics represents system health and metrics
@@ -313,8 +324,10 @@ func (h *Handlers) SetupDashboardRouter() *chi.Mux {
 
 	// Dashboard API endpoints (all require authentication)
 	r.Group(func(r chi.Router) {
-		// Apply auth middleware to all dashboard routes
-		// r.Use(auth.RequireAuthAPI)  // Uncomment when ready to enable auth
+		// Every dashboard route needs a logged-in user: /qr and /invitations
+		// mint registration tokens. The session cookie is SameSite=Lax, so a
+		// cross-site page cannot ride it into a POST or an <img> request.
+		r.Use(h.RequireSessionAPI)
 
 		r.Get("/ws", h.websocketHandler)
 		r.Get("/qr", h.qrCodeHandler)

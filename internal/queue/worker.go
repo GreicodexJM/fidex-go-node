@@ -39,6 +39,10 @@ type Worker struct {
 // outbound FideX envelopes. Must be called once at startup before Start().
 func (w *Worker) SetNodeID(nodeID string) { w.nodeID = nodeID }
 
+// SetHTTPClient replaces the client used to POST to partner endpoints.
+// Production wiring passes a netguard client (partner-chosen URLs).
+func (w *Worker) SetHTTPClient(c *http.Client) { w.httpClient = c }
+
 // WorkerConfig holds worker configuration
 type WorkerConfig struct {
 	PollInterval   time.Duration

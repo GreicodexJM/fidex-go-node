@@ -297,6 +297,8 @@ The JWS payload is:
 
 Answers: `200` `RegistrationResponse` `{"status":"registered","responder_node_id":…,"timestamp":…}`, or an `ErrorResponse` `{"error":{"code","message","timestamp"}}` with `400`, `401`, `409`.
 
+Set `FIDEX_ALLOW_PRIVATE_PEERS=true` only on dev/test networks: by default every request to a partner-chosen URL (discovery fetches and message deliveries) refuses loopback, private, link-local and reserved addresses and does not follow redirects (see `internal/netguard`). The dashboard and settings APIs require a logged-in session.
+
 Set `FIDEX_PUBLIC_BASE_URL` (e.g. `https://fidex.example.com`) to the URL partners use to reach the public API; it builds `initiator_as5_config_url` and the invitation URL. Default: `https://<public_domain>:<public_port>`.
 
 ## 🧪 Testing

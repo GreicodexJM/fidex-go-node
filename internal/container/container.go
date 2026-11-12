@@ -13,6 +13,7 @@ import (
 	"fidex-node/internal/discovery"
 	"fidex-node/internal/domain"
 	"fidex-node/internal/logging"
+	"fidex-node/internal/netguard"
 	"fidex-node/internal/queue"
 	"fidex-node/internal/repository"
 )
@@ -147,6 +148,7 @@ func (c *Container) initDiscoveryService() error {
 		PublicDomain:           c.Config.PublicDomain,
 		SupportedDocumentTypes: []string{},
 		SigningKeyID:           crypto.SigningKeyID(c.Config.NodeID),
+		AllowPrivateNetworks:   c.Config.AllowPrivatePeers,
 	}
 
 	// Create discovery service (CryptoService is initialised before it).
@@ -169,6 +171,8 @@ func (c *Container) initWorkers() error {
 		c.CryptoService,
 	)
 	c.QueueWorker.SetNodeID(c.Config.NodeID)
+	// Deliveries go to partner-published endpoints: guard them like discovery.
+	c.QueueWorker.SetHTTPClient(netguard.NewClient(queue.DefaultWorkerConfig().RequestTimeout, c.Config.AllowPrivatePeers))
 	c.QueueWorker.Start()
 
 	// Initialize WebSocket hub

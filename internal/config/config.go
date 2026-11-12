@@ -30,6 +30,11 @@ type Config struct {
 	InternalAPIKey     string   `json:"internal_api_key"`
 	AllowedIPAddresses []string `json:"allowed_ip_addresses"`
 	EnableIPAllowlist  bool     `json:"enable_ip_allowlist"`
+	// AllowPrivatePeers lets partner URLs (AS5 config, JWKS, register,
+	// receive endpoints) resolve to loopback/private/link-local addresses
+	// (FIDEX_ALLOW_PRIVATE_PEERS). Default false; enable only on dev/test
+	// networks such as a docker bridge. See internal/netguard.
+	AllowPrivatePeers bool `json:"allow_private_peers"`
 
 	// Crypto Keys
 	PrivateKeyPath string `json:"private_key_path"`
@@ -171,6 +176,9 @@ func loadFromEnv(cfg *Config) {
 	}
 	if v := os.Getenv("FIDEX_ENABLE_IP_ALLOWLIST"); v != "" {
 		cfg.EnableIPAllowlist = v == "true" || v == "1"
+	}
+	if v := os.Getenv("FIDEX_ALLOW_PRIVATE_PEERS"); v != "" {
+		cfg.AllowPrivatePeers = v == "true" || v == "1"
 	}
 	if v := os.Getenv("FIDEX_PRIVATE_KEY_PATH"); v != "" {
 		cfg.PrivateKeyPath = v

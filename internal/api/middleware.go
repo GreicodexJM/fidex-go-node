@@ -69,30 +69,13 @@ func APIKeyMiddleware(expectedKey string) func(next http.Handler) http.Handler {
 // getClientIP extracts the real client IP from the request
 // It checks X-Forwarded-For, X-Real-IP headers first, then falls back to RemoteAddr
 func getClientIP(r *http.Request) string {
-	// Check X-Forwarded-For header (used by proxies)
-	forwarded := r.Header.Get("X-Forwarded-For")
-	if forwarded != "" {
-		// X-Forwarded-For can contain multiple IPs, take the first one
-		ips := strings.Split(forwarded, ",")
-		if len(ips) > 0 {
-			return strings.TrimSpace(ips[0])
-		}
-	}
-
-	// Check X-Real-IP header (used by some proxies)
-	realIP := r.Header.Get("X-Real-IP")
-	if realIP != "" {
-		return realIP
-	}
-
-	// Fall back to RemoteAddr
-	// RemoteAddr format is "IP:Port", we need to extract just the IP
+	// Only the TCP peer address counts. X-Forwarded-For / X-Real-IP are set
+	// by the client and would let anybody claim an allowlisted address.
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		// If SplitHostPort fails, return RemoteAddr as-is
 		return r.RemoteAddr
 	}
-
 	return ip
 }
 
@@ -165,4 +148,42 @@ func ParseAllowedIPs(input string) ([]string, error) {
 
 	// If we couldn't parse anything meaningful but input wasn't empty, return error
 	return nil, fmt.Errorf("failed to parse allowed IPs: invalid format")
+}
+
+// RequireSessionAPI wraps routes that need a logged-in dashboard user: 401
+// JSON without a valid session. Without an AuthService it fails closed (503)
+// instead of serving the routes unauthenticated.
+func (h *Handlers) RequireSessionAPI(next http.Handler) http.Handler {
+	if h.AuthService == nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			respondWithError(w, http.StatusServiceUnavailable, "Authentication not configured", nil)
+		})
+	}
+	return h.AuthService.RequireAuthAPI(next)
+}
+
+// RequireSessionPage is RequireSessionAPI for HTML pages: redirect to /login.
+func (h *Handlers) RequireSessionPage(next http.Handler) http.Handler {
+	if h.AuthService == nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "Authentication not configured", http.StatusServiceUnavailable)
+		})
+	}
+	return h.AuthService.RequireAuth(next)
+}
+
+// RedactTokenInRequestURI hides the value of a ?token= query parameter (a
+// single-use registration token, i.e. a bearer secret) from RequestURI, which
+// is what the access logger prints. Routing and handlers read r.URL, which
+// is left untouched.
+func RedactTokenInRequestURI(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if q := r.URL.Query(); q.Has("token") {
+			q.Set("token", "REDACTED")
+			u := *r.URL
+			u.RawQuery = q.Encode()
+			r.RequestURI = u.RequestURI()
+		}
+		next.ServeHTTP(w, r)
+	})
 }

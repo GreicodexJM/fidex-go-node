@@ -12,6 +12,8 @@ services:
       - FIDEX_PUBLIC_DOMAIN=node-a
       # Public URL the other node uses to reach this one (initiator_as5_config_url, invitation QR).
       - FIDEX_PUBLIC_BASE_URL=http://node-a:8443
+      # The peers live on the docker bridge (172.16.0.0/12): allow private addresses.
+      - FIDEX_ALLOW_PRIVATE_PEERS=true
       - FIDEX_API_KEY=test-api-key-12345
       - FIDEX_INTERNAL_PORT=8091
       - FIDEX_PUBLIC_PORT=8443
@@ -36,6 +38,8 @@ services:
       - FIDEX_PUBLIC_DOMAIN=node-b
       # Public URL the other node uses to reach this one (initiator_as5_config_url, invitation QR).
       - FIDEX_PUBLIC_BASE_URL=http://node-b:8443
+      # The peers live on the docker bridge (172.16.0.0/12): allow private addresses.
+      - FIDEX_ALLOW_PRIVATE_PEERS=true
       - FIDEX_INTERNAL_PORT=8092
       - FIDEX_PUBLIC_PORT=8443
       - FIDEX_ALLOWED_IPS=127.0.0.1,::1,172.16.0.0/12,192.168.0.0/16,10.0.0.0/8

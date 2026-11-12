@@ -154,7 +154,7 @@ func (h *Handlers) SetupAuthRouter() chi.Router {
 
 	r.Post("/login", h.loginHandler)
 	r.Post("/logout", h.logoutHandler)
-	r.Get("/me", h.meHandler)
+	r.With(h.RequireSessionAPI).Get("/me", h.meHandler)
 
 	return r
 }

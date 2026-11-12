@@ -15,6 +15,7 @@ import (
 
 	"fidex-node/internal/constants"
 	"fidex-node/internal/crypto"
+	"fidex-node/internal/netguard"
 
 	"github.com/go-jose/go-jose/v4"
 )
@@ -117,6 +118,8 @@ func newResponder(t *testing.T) (*DiscoveryService, *testEnv) {
 		NodeID:           "urn:gln:test:responder",
 		OrganizationName: "Responder Corp",
 		BaseURL:          "https://responder.example.com",
+		// The fake peers below are httptest servers on loopback.
+		AllowPrivateNetworks: true,
 	}, NewTokenStore(), env.partnerRepo, nil)
 	return ds, env
 }
@@ -218,6 +221,8 @@ func TestInitiatorSendsSignedRegistrationWithTokenFromURL(t *testing.T) {
 		NodeID:       "urn:gln:test:node-a",
 		BaseURL:      "https://node-a.example.com",
 		SigningKeyID: crypto.SigningKeyID("urn:gln:test:node-a"),
+		// The fake responder is an httptest server on loopback.
+		AllowPrivateNetworks: true,
 	}
 	ds := NewDiscoveryService(nodeA, NewTokenStore(), env.partnerRepo, initiatorEngine)
 
@@ -300,7 +305,7 @@ func TestInitiatorSurfacesRefusalAndStoresNothing(t *testing.T) {
 	defer env.cleanup()
 	priv, _, _ := crypto.GenerateKeyPair()
 	engine, _ := crypto.NewAS5Engine(priv, "a")
-	ds := NewDiscoveryService(NodeConfig{NodeID: "a", BaseURL: "https://a.example.com", SigningKeyID: crypto.SigningKeyID("a")},
+	ds := NewDiscoveryService(NodeConfig{NodeID: "a", BaseURL: "https://a.example.com", SigningKeyID: crypto.SigningKeyID("a"), AllowPrivateNetworks: true},
 		NewTokenStore(), env.partnerRepo, engine)
 
 	_, err := ds.InitiatePartnerHandshake(context.Background(), responder.as5URL()+"?token=x")
@@ -322,7 +327,7 @@ func TestInitiatorRejectsResponderNodeIDMismatch(t *testing.T) {
 	defer env.cleanup()
 	priv, _, _ := crypto.GenerateKeyPair()
 	engine, _ := crypto.NewAS5Engine(priv, "a")
-	ds := NewDiscoveryService(NodeConfig{NodeID: "a", BaseURL: "https://a.example.com"}, NewTokenStore(), env.partnerRepo, engine)
+	ds := NewDiscoveryService(NodeConfig{NodeID: "a", BaseURL: "https://a.example.com", AllowPrivateNetworks: true}, NewTokenStore(), env.partnerRepo, engine)
 	if _, err := ds.InitiatePartnerHandshake(context.Background(), responder.as5URL()+"?token=x"); err == nil || !strings.Contains(err.Error(), "responder_node_id") {
 		t.Fatalf("want responder_node_id mismatch error, got %v", err)
 	}
@@ -545,7 +550,7 @@ func TestInitiatorErrorsDoNotLeakToken(t *testing.T) {
 	defer env.cleanup()
 	priv, _, _ := crypto.GenerateKeyPair()
 	engine, _ := crypto.NewAS5Engine(priv, "a")
-	ds := NewDiscoveryService(NodeConfig{NodeID: "a", BaseURL: "https://a.example.com"}, NewTokenStore(), env.partnerRepo, engine)
+	ds := NewDiscoveryService(NodeConfig{NodeID: "a", BaseURL: "https://a.example.com", AllowPrivateNetworks: true}, NewTokenStore(), env.partnerRepo, engine)
 
 	const secret = "s3cr3t-invitation-token-value"
 	// Port 1 on loopback refuses: net/http's error quotes the full URL.
@@ -570,5 +575,38 @@ func TestInitiatorErrorsDoNotLeakToken(t *testing.T) {
 
 	if got := RedactDiscoveryURL("https://b.example.com/x?a=1&token=" + secret); strings.Contains(got, secret) || !strings.Contains(got, "token=REDACTED") {
 		t.Fatalf("RedactDiscoveryURL = %q", got)
+	}
+}
+
+// With private networks NOT allowed (the production default) a responder
+// refuses to fetch an initiator that lives on loopback — after spending the
+// token, and without storing anything.
+func TestResponderGuardRefusesPrivateInitiatorURL(t *testing.T) {
+	env := setupTestDB(t)
+	defer env.cleanup()
+	ds := NewDiscoveryService(NodeConfig{NodeID: "r", BaseURL: "https://r.example.com"}, NewTokenStore(), env.partnerRepo, nil)
+	initiator := newTestPeer(t, "urn:gln:test:initiator")
+	token := mintToken(t, ds)
+
+	_, rerr := ds.HandleRegistration(context.Background(), initiator.sign(t, initiator.claimsFor(token, time.Now()), crypto.SigningKeyID(initiator.nodeID)))
+	wantRefusal(t, rerr, 400, CodeConfigUnreachable)
+	if n := initiator.requests.Load(); n != 0 {
+		t.Errorf("guarded responder reached a loopback initiator (%d requests)", n)
+	}
+	if !errors.Is(rerr.Err, netguard.ErrBlockedAddress) {
+		t.Errorf("cause = %v, want netguard.ErrBlockedAddress", rerr.Err)
+	}
+}
+
+func TestValidateAS5ConfigRejectsNonHTTPEndpoints(t *testing.T) {
+	cfg := GenerateAS5Config(NodeConfig{NodeID: "x", BaseURL: "https://x.example.com"})
+	cfg.Endpoints.ReceiveMessage = "file:///etc/passwd"
+	if err := validateAS5Config(cfg); err == nil {
+		t.Fatal("a file: endpoint must be refused")
+	}
+	cfg = GenerateAS5Config(NodeConfig{NodeID: "x", BaseURL: "https://x.example.com"})
+	cfg.Endpoints.JWKS = "https://user:pw@x.example.com/jwks"
+	if err := validateAS5Config(cfg); err == nil {
+		t.Fatal("an endpoint with userinfo must be refused")
 	}
 }

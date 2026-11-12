@@ -194,7 +194,7 @@ func (ds *DiscoveryService) HandleRegistration(ctx context.Context, body string)
 	}
 
 	// 4. Initiator's AS5 configuration; it must name the claimed node.
-	cfg, err := FetchAS5Config(c.InitiatorAS5ConfigURL)
+	cfg, err := FetchAS5Config(ds.httpClient, c.InitiatorAS5ConfigURL)
 	if err != nil {
 		return nil, refuse(http.StatusBadRequest, CodeConfigUnreachable, "Unable to fetch initiator AS5 configuration", err)
 	}
@@ -205,7 +205,7 @@ func (ds *DiscoveryService) HandleRegistration(ctx context.Context, body string)
 	}
 
 	// 5. Initiator's JWKS, then the signature.
-	jwksData, err := FetchAndCachePartnerKeys(cfg.Endpoints.JWKS)
+	jwksData, err := FetchAndCachePartnerKeys(ds.httpClient, cfg.Endpoints.JWKS)
 	if err != nil {
 		return nil, refuse(http.StatusBadRequest, CodeConfigUnreachable, "Unable to fetch initiator JWKS", err)
 	}

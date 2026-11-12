@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"fidex-node/internal/auth"
 	"fidex-node/internal/config"
 	"fidex-node/internal/constants"
 	"fidex-node/internal/crypto"
@@ -28,6 +29,7 @@ type e2eNode struct {
 	h         *Handlers
 	public    *httptest.Server
 	dashboard *httptest.Server
+	session   string // a logged-in admin's session cookie value
 }
 
 func newE2ENode(t *testing.T, nodeID string) *e2eNode {
@@ -37,6 +39,13 @@ func newE2ENode(t *testing.T, nodeID string) *e2eNode {
 	t.Cleanup(func() { _ = db.Close() })
 	require.NoError(t, repository.InitSchema(db))
 	partners := repository.NewSQLitePartnerRepository(db)
+	authSvc := auth.NewService(repository.NewSQLiteSessionRepository(db), repository.NewSQLiteUserRepository(db))
+	hash, err := auth.HashPassword("e2e-password")
+	require.NoError(t, err)
+	user, err := authSvc.CreateUser(context.Background(), "admin", hash)
+	require.NoError(t, err)
+	sess, err := authSvc.CreateSession(context.Background(), user.ID)
+	require.NoError(t, err)
 
 	priv, _, err := crypto.GenerateKeyPair()
 	require.NoError(t, err)
@@ -47,7 +56,8 @@ func newE2ENode(t *testing.T, nodeID string) *e2eNode {
 		Config:        &config.Config{NodeID: nodeID, OrganizationName: "Org " + nodeID, PublicDomain: "localhost"},
 		PartnerRepo:   partners,
 		CryptoService: engine,
-	}}
+		AuthService:   authSvc,
+	}, session: sess.SessionID}
 	// The public URL is only known once the server listens; route through n.h.
 	var publicRouter http.Handler
 	n.public = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { publicRouter.ServeHTTP(w, r) }))
@@ -59,6 +69,8 @@ func newE2ENode(t *testing.T, nodeID string) *e2eNode {
 		OrganizationName: "Org " + nodeID,
 		BaseURL:          n.h.Config.ResolvedPublicBaseURL(),
 		SigningKeyID:     crypto.SigningKeyID(nodeID),
+		// Both nodes are httptest servers on loopback.
+		AllowPrivateNetworks: true,
 	}, discovery.NewTokenStore(), partners, engine)
 	publicRouter = n.h.SetupPublicRouter()
 
@@ -67,10 +79,21 @@ func newE2ENode(t *testing.T, nodeID string) *e2eNode {
 	return n
 }
 
+// do sends a dashboard request as the logged-in admin.
+func (n *e2eNode) do(t *testing.T, method, path, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(method, n.dashboard.URL+path, strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: n.session})
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	return resp
+}
+
 func (n *e2eNode) invitation(t *testing.T) string {
 	t.Helper()
-	resp, err := http.Post(n.dashboard.URL+constants.RouteInvitations, "application/json", nil)
-	require.NoError(t, err)
+	resp := n.do(t, http.MethodPost, constants.RouteInvitations, "")
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	var inv InvitationResponse
@@ -80,9 +103,7 @@ func (n *e2eNode) invitation(t *testing.T) string {
 
 func (n *e2eNode) discover(t *testing.T, discoveryURL string) (int, string) {
 	t.Helper()
-	body := `{"discovery_url":"` + discoveryURL + `"}`
-	resp, err := http.Post(n.dashboard.URL+constants.RouteDiscover, "application/json", strings.NewReader(body))
-	require.NoError(t, err)
+	resp := n.do(t, http.MethodPost, constants.RouteDiscover, `{"discovery_url":"`+discoveryURL+`"}`)
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(b)
@@ -136,8 +157,7 @@ func TestE2E_RegistrationByInvitation(t *testing.T) {
 // The QR endpoint mints a token: the PNG's URL (also in a header) is open.
 func TestE2E_QRCarriesMintedToken(t *testing.T) {
 	b := newE2ENode(t, "urn:gln:test:node-b")
-	resp, err := http.Get(b.dashboard.URL + constants.RouteDashboardQR)
-	require.NoError(t, err)
+	resp := b.do(t, http.MethodGet, constants.RouteDashboardQR, "")
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "image/png", resp.Header.Get("Content-Type"))
@@ -182,4 +202,47 @@ func TestE2E_RegisterRequiresJOSE(t *testing.T) {
 	require.NoError(t, err)
 	defer resp2.Body.Close()
 	assert.Equal(t, http.StatusBadRequest, resp2.StatusCode)
+}
+
+// Token-minting and settings routes need a session: without one they answer
+// 401 and mint nothing.
+func TestE2E_DashboardAndSettingsRequireSession(t *testing.T) {
+	b := newE2ENode(t, "urn:gln:test:node-b")
+	for _, c := range []struct{ method, path string }{
+		{http.MethodPost, constants.RouteInvitations},
+		{http.MethodGet, constants.RouteDashboardQR},
+		{http.MethodPost, constants.RouteDiscover},
+		{http.MethodGet, constants.RouteDashboardPartners},
+	} {
+		req, _ := http.NewRequest(c.method, b.dashboard.URL+c.path, strings.NewReader("{}"))
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode, "%s %s without a session", c.method, c.path)
+
+		req, _ = http.NewRequest(c.method, b.dashboard.URL+c.path, strings.NewReader("{}"))
+		req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: "forged"})
+		resp, err = http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode, "%s %s with a forged session", c.method, c.path)
+	}
+
+	settings := httptest.NewServer(b.h.SetupSettingsRouter())
+	defer settings.Close()
+	resp, err := http.Get(settings.URL + constants.RouteUsers)
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+// Without an AuthService the protected routers fail closed.
+func TestRequireSessionFailsClosedWithoutAuthService(t *testing.T) {
+	h := &Handlers{}
+	srv := httptest.NewServer(h.SetupDashboardRouter())
+	defer srv.Close()
+	resp, err := http.Post(srv.URL+constants.RouteInvitations, "application/json", nil)
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 }

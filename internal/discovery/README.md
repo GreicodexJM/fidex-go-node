@@ -76,6 +76,10 @@ The signing `kid` is `crypto.SigningKeyID(nodeID)` (`<node_id>:enc-sig`), the ki
 
 ## Configuration
 
+`FIDEX_ALLOW_PRIVATE_PEERS` (default `false`). Every request to a partner-chosen URL goes through `internal/netguard`: the AS5 configuration, the JWKS, `register`, and the queue worker's deliveries to `receive_message` / `receive_receipt`. netguard checks the resolved IP address at dial time and refuses loopback, private (RFC 1918 / ULA), link-local (including 169.254.169.254), CGNAT and reserved ranges. It never follows redirects, and with the guard on it ignores `HTTP(S)_PROXY`. Set the variable to `true` only on development or test networks where partners live on private addresses (docker bridge, localhost).
+
+Endpoint URLs in an AS5 configuration must be absolute `http(s)` URLs without userinfo. They are NOT required to share the configuration's host: MFT publishes its per-tenant JWKS and its per-partner `receive_message` on different hosts, so that rule would break interop. The dial-time guard is what keeps them off internal addresses.
+
 `FIDEX_PUBLIC_BASE_URL` is the URL partners use to reach the public API (for example `https://fidex.example.com`). It is used to build `initiator_as5_config_url` and the invitation URL. Default: `https://<FIDEX_PUBLIC_DOMAIN>:<FIDEX_PUBLIC_PORT>`.
 
 ## Files
@@ -93,8 +97,17 @@ The signing `kid` is `crypto.SigningKeyID(nodeID)` (`<node_id>:enc-sig`), the ki
 go test ./internal/discovery/ ./internal/api/
 ```
 
+## Access control
+
+- `/admin/dashboard/*` (including `/qr` and `/invitations`, which mint tokens), `/admin/settings/*` and `/admin/auth/me` require a logged-in session (`RequireSessionAPI`); `/dashboard` redirects to `/login`. Without an `AuthService` these routers answer 503 instead of serving unauthenticated.
+- The session cookie is `HttpOnly`, `SameSite=Lax`: a cross-site page cannot send it with a POST or an `<img>`/`fetch` subresource, which is the CSRF defence for the token-minting routes.
+- The dashboard WebSocket accepts only same-origin upgrades.
+- The internal router's IP allowlist judges the TCP peer address only; `X-Forwarded-For` / `X-Real-IP` are ignored (they let any client claim an allowlisted IP).
+- The public router's access log prints `?token=REDACTED`; initiator errors and logs redact the token too.
+
 ## Known limits
 
 - Tokens live in memory: a restart invalidates every open invitation.
-- No SSRF guard beyond the token gate: once a valid token is spent, the responder fetches whatever URL the initiator named (bounded to 1 MiB per document, with the HTTP client's default redirect policy).
+- With `FIDEX_ALLOW_PRIVATE_PEERS=true` there is no SSRF guard beyond the token gate.
 - No `INACTIVE` partner state yet (§6.5), so re-registration requires deleting the partner first.
+- Behind a reverse proxy, the internal IP allowlist sees the proxy's address; put the allowlist on the proxy.

@@ -131,7 +131,7 @@ func TestFetchAS5Config(t *testing.T) {
 	}))
 	defer server.Close()
 
-	fetchedConfig, err := FetchAS5Config(server.URL)
+	fetchedConfig, err := FetchAS5Config(http.DefaultClient, server.URL)
 	if err != nil {
 		t.Fatalf("Failed to fetch AS5 config: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestFetchAS5Config(t *testing.T) {
 
 // TestFetchAS5ConfigInvalidURL tests fetching from an invalid URL
 func TestFetchAS5ConfigInvalidURL(t *testing.T) {
-	_, err := FetchAS5Config("http://invalid-domain-that-does-not-exist.local/config")
+	_, err := FetchAS5Config(http.DefaultClient, "http://invalid-domain-that-does-not-exist.local/config")
 	if err == nil {
 		t.Error("Expected error with invalid URL, got nil")
 	}
@@ -165,7 +165,7 @@ func TestFetchAS5ConfigInvalidJSON(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := FetchAS5Config(server.URL)
+	_, err := FetchAS5Config(http.DefaultClient, server.URL)
 	if err == nil {
 		t.Error("Expected error with invalid JSON, got nil")
 	}

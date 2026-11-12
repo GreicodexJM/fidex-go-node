@@ -367,7 +367,7 @@ func (h *Handlers) SetupSettingsRouter() chi.Router {
 	r := chi.NewRouter()
 
 	// All settings routes require authentication
-	// r.Use(auth.RequireAuthAPI) // Uncomment when ready
+	r.Use(h.RequireSessionAPI)
 
 	// Node configuration (read-only, use config file/env vars to change)
 	r.Get("/config", h.getConfigHandler)
